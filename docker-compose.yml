@@ -125,6 +125,13 @@ services:
       CORS_ORIGINS: ${HUMAN_INDEX_CORS_ORIGINS:-["https://humanindex.io"]}
       ENVIRONMENT: ${HUMAN_INDEX_ENVIRONMENT:-production}
       PUBLIC_BASE_URL: ${HUMAN_INDEX_PUBLIC_BASE_URL:-https://humanindex.io}
+      MEDIA_BACKEND: ${HUMAN_INDEX_MEDIA_BACKEND:-spaces}
+      SPACES_ENDPOINT_URL: ${HUMAN_INDEX_SPACES_ENDPOINT_URL:-https://nyc3.digitaloceanspaces.com}
+      SPACES_REGION: ${HUMAN_INDEX_SPACES_REGION:-nyc3}
+      SPACES_BUCKET: ${SPACES_BUCKET:-}
+      SPACES_ACCESS_KEY_ID: ${SPACES_ACCESS_KEY:-}
+      SPACES_SECRET_ACCESS_KEY: ${SPACES_SECRET_KEY:-}
+      SPACES_KEY_PREFIX: ${HUMAN_INDEX_SPACES_KEY_PREFIX:-human-index}
       POSTMARK_API_TOKEN: ${HUMAN_INDEX_POSTMARK_API_TOKEN:?Set HUMAN_INDEX_POSTMARK_API_TOKEN in .env}
       MAIL_FROM: ${HUMAN_INDEX_MAIL_FROM:-Human Index <records@humanindex.io>}
       MAIL_REPLY_TO: ${HUMAN_INDEX_MAIL_REPLY_TO:-}
@@ -137,6 +144,8 @@ services:
       SENTRY_DSN: ${HUMAN_INDEX_SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${HUMAN_INDEX_SENTRY_TRACES_SAMPLE_RATE:-0.0}
       CANVAS_API_KEY: ${CANVAS_API_KEY:-}
+    volumes:
+      - human_index_data:/app/backend/data
     networks:
       - internal
     depends_on:
@@ -314,5 +323,6 @@ volumes:
   caddy_config:
   synapse_data:
   noodle_data:
+  human_index_data:
   uptime_state:
   email_monitor_state:
