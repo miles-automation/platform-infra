@@ -4,10 +4,20 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner_target:
+        description: "Runner target for manual runs"
+        required: true
+        type: choice
+        default: "self-hosted-canary"
+        options:
+          - self-hosted-canary
+          - ubuntu-latest
 
 jobs:
   docs_drift:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_target == 'ubuntu-latest' && '"ubuntu-latest"' || '["self-hosted","linux","x64","do-1gb-canary"]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
