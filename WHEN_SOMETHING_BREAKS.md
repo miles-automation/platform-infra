@@ -171,6 +171,53 @@ If a deployment broke something:
 - **Data loss risk** - Postgres issues, disk full
 - **Security incidents** - Unusual access patterns, credential exposure
 
+## CI Runners (do-1gb-runner-main)
+
+Self-hosted GitHub Actions runners live on a separate droplet (`167.172.224.151`), not the production platform droplet.
+
+### Runner not picking up jobs
+
+```bash
+# Check which runners are running
+ssh root@167.172.224.151 "systemctl list-units --type=service --state=running | grep actions.runner"
+
+# Restart a specific runner (e.g., spark-swarm)
+ssh root@167.172.224.151 "systemctl restart 'actions.runner.richmiles-spark-swarm.*'"
+
+# Check runner logs
+ssh root@167.172.224.151 "journalctl -u 'actions.runner.richmiles-spark-swarm.*' --tail 50"
+
+# Restart ALL runners
+ssh root@167.172.224.151 "systemctl restart 'actions.runner.richmiles-*'"
+```
+
+### Runner offline in GitHub
+
+If GitHub shows the runner as offline but systemd shows it running, the runner may have lost its registration token. Re-run the setup script:
+
+```bash
+# From your local machine
+GITHUB_TOKEN=$(gh auth token) ssh root@167.172.224.151 "GITHUB_TOKEN='${GITHUB_TOKEN}' bash /root/setup-runners.sh"
+```
+
+### Disk full on runner droplet
+
+Docker build caches can fill the disk. Clean up:
+
+```bash
+ssh root@167.172.224.151 "docker system prune -f && df -h /"
+```
+
+### Memory pressure
+
+The runner droplet has 1GB RAM. If builds are OOM-killing, check usage:
+
+```bash
+ssh root@167.172.224.151 "free -h && ps aux --sort=-%mem | head 10"
+```
+
+Consider upgrading the droplet if this happens frequently.
+
 ## Emergency Contacts
 
 - DigitalOcean Status: https://status.digitalocean.com

@@ -20,6 +20,7 @@ services:
       - human-index
       - richmiles-xyz
       - bullshit-or-fit
+      - eshers-codex
       - spark-swarm
 
   # Shared Postgres database
@@ -133,6 +134,8 @@ services:
       SPACES_SECRET_ACCESS_KEY: ${SPACES_SECRET_KEY:-}
       SPACES_KEY_PREFIX: ${HUMAN_INDEX_SPACES_KEY_PREFIX:-human-index}
       POSTMARK_API_TOKEN: ${HUMAN_INDEX_POSTMARK_API_TOKEN:?Set HUMAN_INDEX_POSTMARK_API_TOKEN in .env}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       MAIL_FROM: ${HUMAN_INDEX_MAIL_FROM:-Human Index <records@humanindex.io>}
       MAIL_REPLY_TO: ${HUMAN_INDEX_MAIL_REPLY_TO:-}
       SESSION_TTL_DAYS: ${HUMAN_INDEX_SESSION_TTL_DAYS:-30}
@@ -141,11 +144,30 @@ services:
       SPARK_SWARM_OAUTH_CLIENT_ID: ${HUMAN_INDEX_SPARK_SWARM_OAUTH_CLIENT_ID:-human-index-web}
       SPARK_SWARM_OAUTH_CLIENT_SECRET: ${HUMAN_INDEX_SPARK_SWARM_OAUTH_CLIENT_SECRET:?Set HUMAN_INDEX_SPARK_SWARM_OAUTH_CLIENT_SECRET in .env}
       SPARK_SWARM_OAUTH_REDIRECT_URI: ${HUMAN_INDEX_SPARK_SWARM_OAUTH_REDIRECT_URI:-https://humanindex.io/auth/callback}
+      SPARK_SWARM_API_URL: ${SPARK_SWARM_API_URL:-http://spark-swarm:8000/api/v1}
+      SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY:-}
       SENTRY_DSN: ${HUMAN_INDEX_SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${HUMAN_INDEX_SENTRY_TRACES_SAMPLE_RATE:-0.0}
       CANVAS_API_KEY: ${CANVAS_API_KEY:-}
     volumes:
       - human_index_data:/app/backend/data
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Esher's Codex - Math curriculum app
+  eshers-codex:
+    image: ghcr.io/richmiles/eshers-codex-app:${ESHERS_CODEX_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${ESHERS_CODEX_DB_USER:-eshers_codex}:${ESHERS_CODEX_DB_PASSWORD:?Set ESHERS_CODEX_DB_PASSWORD in .env}@postgres:5432/${ESHERS_CODEX_DB_NAME:-eshers_codex_db}
+      ENVIRONMENT: production
+      CONTENT_DIR: /app/content
+      CORS_ORIGINS: https://esherscodex.com
+      COOKIE_NAME: eshers_codex_learner
+      COOKIE_MAX_AGE_DAYS: 365
     networks:
       - internal
     depends_on:

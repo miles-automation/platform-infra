@@ -1,5 +1,7 @@
 # IEOMD - Time-locked secret delivery
 ieomd.com {
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy ieomd:8000
 }
 
@@ -9,6 +11,7 @@ www.ieomd.com {
 
 # Umami - Analytics
 analytics.sparkswarm.com {
+	encode zstd gzip
 	reverse_proxy umami:3000
 }
 
@@ -19,11 +22,15 @@ chat.sparkswarm.com {
 
 # Call of the Noodle - Noodle bar rating app
 callofthenoodle.com {
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy noodle:8000
 }
 
 # Human Index
 humanindex.io {
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy human-index:8000
 }
 
@@ -33,6 +40,8 @@ www.humanindex.io {
 
 # richmiles.xyz
 richmiles.xyz {
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy richmiles-xyz:8000
 }
 
@@ -42,6 +51,8 @@ www.richmiles.xyz {
 
 # Bullshit or Fit
 bullshitorfit.com {
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy bullshit-or-fit:8000
 }
 
@@ -51,6 +62,8 @@ www.bullshitorfit.com {
 
 # Spark Swarm - Project ecosystem dashboard
 sparkswarm.com {
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy spark-swarm:8000
 }
 
@@ -59,10 +72,18 @@ www.sparkswarm.com {
 }
 
 swarm.sparkswarm.com {
-	redir https://sparkswarm.com{uri} permanent
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
+	reverse_proxy spark-swarm:8000
 }
 
-# Add new services below:
-# example.sparkswarm.com {
-#     reverse_proxy service:port
-# }
+# Esher's Codex - Math curriculum app
+esherscodex.com {
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
+	reverse_proxy eshers-codex:8000
+}
+
+www.esherscodex.com {
+	redir https://esherscodex.com{uri} permanent
+}
