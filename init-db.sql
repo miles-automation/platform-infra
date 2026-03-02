@@ -30,3 +30,8 @@ GRANT ALL PRIVILEGES ON DATABASE human_index_db TO human_index;
 CREATE USER spark_swarm WITH PASSWORD 'CHANGE_ME_SPARK_SWARM';
 CREATE DATABASE spark_swarm_db OWNER spark_swarm;
 GRANT ALL PRIVILEGES ON DATABASE spark_swarm_db TO spark_swarm;
+
+-- Create Esher's Codex database and user
+CREATE USER eshers_codex WITH PASSWORD 'CHANGE_ME_ESHERS_CODEX';
+CREATE DATABASE eshers_codex_db OWNER eshers_codex;
+GRANT ALL PRIVILEGES ON DATABASE eshers_codex_db TO eshers_codex;

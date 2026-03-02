@@ -20,6 +20,7 @@ services:
       - human-index
       - richmiles-xyz
       - bullshit-or-fit
+      - eshers-codex
       - spark-swarm
 
   # Shared Postgres database
@@ -150,6 +151,23 @@ services:
       CANVAS_API_KEY: ${CANVAS_API_KEY:-}
     volumes:
       - human_index_data:/app/backend/data
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Esher's Codex - Math curriculum app
+  eshers-codex:
+    image: ghcr.io/richmiles/eshers-codex-app:${ESHERS_CODEX_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://${ESHERS_CODEX_DB_USER:-eshers_codex}:${ESHERS_CODEX_DB_PASSWORD:?Set ESHERS_CODEX_DB_PASSWORD in .env}@postgres:5432/${ESHERS_CODEX_DB_NAME:-eshers_codex_db}
+      ENVIRONMENT: production
+      CONTENT_DIR: /app/content
+      CORS_ORIGINS: https://esherscodex.com
+      COOKIE_NAME: eshers_codex_learner
+      COOKIE_MAX_AGE_DAYS: 365
     networks:
       - internal
     depends_on:
