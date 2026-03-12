@@ -119,7 +119,7 @@ services:
 
   # Human Index - private recall utility (FastAPI + static frontend)
   human-index:
-    image: ghcr.io/richmiles/human-index-app:${HUMAN_INDEX_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/human-index-app:${HUMAN_INDEX_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_DB_USER:-human_index}:${HUMAN_INDEX_DB_PASSWORD:?Set HUMAN_INDEX_DB_PASSWORD in .env}@postgres:5432/${HUMAN_INDEX_DB_NAME:-human_index_db}
@@ -149,6 +149,8 @@ services:
       SENTRY_DSN: ${HUMAN_INDEX_SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${HUMAN_INDEX_SENTRY_TRACES_SAMPLE_RATE:-0.0}
       CANVAS_API_KEY: ${CANVAS_API_KEY:-}
+      VAPID_PRIVATE_KEY: ${HUMAN_INDEX_VAPID_PRIVATE_KEY:-}
+      VAPID_PUBLIC_KEY: ${HUMAN_INDEX_VAPID_PUBLIC_KEY:-}
     volumes:
       - human_index_data:/app/backend/data
     networks:
