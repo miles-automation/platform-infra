@@ -377,6 +377,13 @@ def cookie_secure() -> bool:
 
 Cascading dependency injection for auth and authorization.
 
+**Supported auth modes:**
+- **Session/cookie auth** for user-facing SPAs where a browser is the main client.
+- **Bearer token auth** for personal access tokens, delegated access, or mixed browser/API clients.
+- **API-key auth** for agent-first or service-to-service apps where the primary client is another tool, runner, or automation.
+
+Choose the simplest mode that matches the product surface. Do not force session auth onto machine clients, and do not force API-key auth onto end-user browser flows that need CSRF protection and session UX.
+
 ```python
 from fastapi import Depends, HTTPException, Request, status
 
@@ -426,13 +433,41 @@ def check_tier_limit(resource: str):
     return dependency
 ```
 
+### API-key auth pattern
+
+For agent-first apps, prefer a dedicated dependency that resolves the caller from `X-API-Key`.
+
+```python
+from fastapi import Depends, Header, HTTPException, status
+
+def get_api_actor(
+    x_api_key: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> ApiActor:
+    if not x_api_key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key required")
+
+    key_hash = sha256_hex(x_api_key)
+    actor = lookup_api_actor_by_key_hash(db, key_hash=key_hash)
+    if actor is None or actor.revoked_at is not None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+
+    record_api_key_use(db, actor_id=actor.id)
+    return actor
+```
+
 **Security patterns:**
 - Hash tokens with `sha256_hex()` before storing in DB.
+- Hash API keys before storing them; never persist raw keys after issuance.
+- API keys should have a visible prefix or key ID for audit/debug, plus scope, status, created_at, last_used_at, and optional expires_at.
+- Prefer scoped API keys over one global secret when an app is expected to be used by multiple agents, automations, or environments.
+- API-key apps should still enforce authorization in dependencies/services; authentication alone is not enough.
+- Apply rate limits per key or per actor on externally exposed machine endpoints.
 - CSRF: cookie + header match on non-safe methods, skipped for Bearer auth.
 - Session rolling: extend TTL on each authenticated request.
 - `secrets.compare_digest()` for constant-time comparison.
 
-> **Source**: `human-index/backend/app/deps.py`, `security.py`
+> **Source**: `human-index/backend/app/deps.py`, `security.py`, `spark-swarm/backend/app/routers/auth.py`, `spark-swarm/backend/app/routers/secrets.py`
 
 ---
 
@@ -1223,11 +1258,11 @@ Migrations run automatically in the Docker entrypoint before the app starts.
 **General:**
 - **SQLite-only apps** (e.g., single-user tools): skip Alembic, use `Base.metadata.create_all()`.
 - **No auth needed**: drop deps.py, CSRF middleware, session management.
+- **Agent-first apps**: API-key auth is a first-class option; use `X-API-Key` plus hashed/scoped keys instead of sessions.
 - **No AI features**: skip section 9 entirely.
 - **Static sites** (e.g., richmiles.xyz): frontend-only, no backend patterns apply.
 - **Different frontend** (e.g., HTMX, no SPA): skip sections 11-15, adjust Dockerfile.
 
 **Project-specific exceptions:**
 - **Esher's Codex**: no auth system — single learner identified by httpOnly cookie.
-- **Spark Swarm**: uses API-key auth (`X-API-Key` header), not OAuth/sessions.
 - **IEOMD**: has additional zero-knowledge crypto requirements (encryption keys in URL fragment only, never sent to server).
