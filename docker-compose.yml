@@ -23,6 +23,25 @@ services:
       - eshers-codex
       - spark-swarm
 
+  # Self-hosted Docker registry (GHCR fallback / GitHub-free deploys)
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+    volumes:
+      - registry_data:/var/lib/registry
+    ports:
+      - "127.0.0.1:5000:5000"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/v2/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # Shared Postgres database
   postgres:
     image: postgres:16-alpine
@@ -44,7 +63,7 @@ services:
 
   # IEOMD - App (FastAPI + built SPA)
   ieomd:
-    image: ghcr.io/richmiles/ieomd-app:${IEOMD_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/ieomd-app:${IEOMD_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg2://${IEOMD_DB_USER:-ieomd}:${IEOMD_DB_PASSWORD:?Set IEOMD_DB_PASSWORD in .env}@postgres:5432/${IEOMD_DB_NAME:-ieomd_db}
@@ -110,12 +129,16 @@ services:
 
   # Noodle - Bar rating app
   noodle:
-    image: ghcr.io/richmiles/noodle-app:${NOODLE_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/noodle-app:${NOODLE_IMAGE_TAG:-latest}
     restart: unless-stopped
-    volumes:
-      - noodle_data:/app/data
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${NOODLE_DB_USER:-noodle}:${NOODLE_DB_PASSWORD:?Set NOODLE_DB_PASSWORD in .env}@postgres:5432/${NOODLE_DB_NAME:-noodle_db}
+      ENVIRONMENT: production
     networks:
       - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # Human Index - private recall utility (FastAPI + static frontend)
   human-index:
@@ -161,7 +184,7 @@ services:
 
   # Esher's Codex - Math curriculum app
   eshers-codex:
-    image: ghcr.io/richmiles/eshers-codex-app:${ESHERS_CODEX_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/eshers-codex-app:${ESHERS_CODEX_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://${ESHERS_CODEX_DB_USER:-eshers_codex}:${ESHERS_CODEX_DB_PASSWORD:?Set ESHERS_CODEX_DB_PASSWORD in .env}@postgres:5432/${ESHERS_CODEX_DB_NAME:-eshers_codex_db}
@@ -183,7 +206,7 @@ services:
 
   # richmiles.xyz - Static resume site
   richmiles-xyz:
-    image: ghcr.io/richmiles/richmiles-xyz-app:${RICHMILES_XYZ_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/richmiles-xyz-app:${RICHMILES_XYZ_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY}
@@ -193,7 +216,7 @@ services:
 
   # Bullshit or Fit - public landing + lead capture
   bullshit-or-fit:
-    image: ghcr.io/richmiles/bullshit-or-fit:${BULLSHIT_OR_FIT_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/bullshit-or-fit:${BULLSHIT_OR_FIT_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       SPARK_SWARM_API_URL: ${BULLSHIT_OR_FIT_SPARK_SWARM_API_URL:-http://spark-swarm:8000/api/v1}
@@ -204,7 +227,7 @@ services:
 
   # Spark Swarm - Project ecosystem dashboard
   spark-swarm:
-    image: ghcr.io/richmiles/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${SPARK_SWARM_DB_USER:-spark_swarm}:${SPARK_SWARM_DB_PASSWORD:?Set SPARK_SWARM_DB_PASSWORD in .env}@postgres:5432/${SPARK_SWARM_DB_NAME:-spark_swarm_db}
@@ -276,7 +299,7 @@ services:
 
   # Fleet uptime prober (logs Spark Swarm events + Matrix alerts)
   uptime-prober:
-    image: ghcr.io/richmiles/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
     restart: unless-stopped
     command: ["python", "-m", "app.uptime_prober"]
     environment:
@@ -301,7 +324,7 @@ services:
 
   # Email monitor (IMAP polling + Matrix notifications for new mail)
   email-monitor:
-    image: ghcr.io/richmiles/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
     restart: unless-stopped
     command: ["python", "-m", "app.email_monitor"]
     environment:
@@ -325,7 +348,7 @@ services:
 
   # Lead outreach scheduler (SLA reminders/overdue flags + Matrix notifications)
   lead-scheduler:
-    image: ghcr.io/richmiles/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
     restart: unless-stopped
     command: ["python", "-m", "app.lead_scheduler"]
     environment:
@@ -351,7 +374,7 @@ volumes:
   caddy_data:
   caddy_config:
   synapse_data:
-  noodle_data:
   human_index_data:
   uptime_state:
   email_monitor_state:
+  registry_data:

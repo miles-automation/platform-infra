@@ -35,3 +35,8 @@ GRANT ALL PRIVILEGES ON DATABASE spark_swarm_db TO spark_swarm;
 CREATE USER eshers_codex WITH PASSWORD 'CHANGE_ME_ESHERS_CODEX';
 CREATE DATABASE eshers_codex_db OWNER eshers_codex;
 GRANT ALL PRIVILEGES ON DATABASE eshers_codex_db TO eshers_codex;
+
+-- Create Noodle database and user
+CREATE USER noodle WITH PASSWORD 'CHANGE_ME_NOODLE';
+CREATE DATABASE noodle_db OWNER noodle;
+GRANT ALL PRIVILEGES ON DATABASE noodle_db TO noodle;
