@@ -29,8 +29,15 @@ Shared infrastructure for SparkSwarm projects. Manages Docker Compose services, 
 | IEOMD | ieomd.com | Time-locked secret delivery ([repo](https://github.com/richmiles/in-the-event-of-my-death)) |
 | Noodle | callofthenoodle.com | Bar rating app (SQLite) |
 | Umami | analytics.sparkswarm.com | Privacy-focused analytics |
+| Spark Swarm | swarm.sparkswarm.com | Project dashboard + secrets manager |
 | Human Index | humanindex.io | Private recall utility (subjects + observations) |
+| Esher's Codex | esherscodex.com | Math curriculum app |
+| richmiles.xyz | richmiles.xyz | Static resume site |
 | Bullshit or Fit | bullshitorfit.com | Resume screening landing page + lead capture |
+| Synapse | chat.sparkswarm.com | Matrix server (ops alerting) - planned |
+| Uptime prober | - | Fleet health checks + Matrix alerts (Spark Swarm worker) |
+| Email monitor | - | IMAP polling + Matrix notifications (Spark Swarm worker) |
+| Lead scheduler | - | Lead outreach reminders + Matrix notifications (Spark Swarm worker) |
 
 ## Shared Resources
 
@@ -124,6 +131,16 @@ POSTGRES_PASSWORD=x \
 IEOMD_DB_PASSWORD=x \
 UMAMI_DB_PASSWORD=x \
 UMAMI_APP_SECRET=x \
+SYNAPSE_DB_PASSWORD=x \
+HUMAN_INDEX_DB_PASSWORD=x \
+HUMAN_INDEX_POSTMARK_API_TOKEN=x \
+HUMAN_INDEX_SPARK_SWARM_OAUTH_CLIENT_SECRET=x \
+ESHERS_CODEX_DB_PASSWORD=x \
+SPARK_SWARM_DB_PASSWORD=x \
+SPARK_SWARM_MASTER_KEY=x \
+SPARK_SWARM_API_KEY=x \
+UPTIME_PROBER_API_KEY=x \
+EMAIL_MONITOR_API_KEY=x \
 docker compose config >/dev/null
 ```
 

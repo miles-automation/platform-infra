@@ -28,10 +28,16 @@ This repo manages shared infrastructure for all SparkSwarm projects on a single 
 | postgres | - | 5432 | Shared DB (internal only) |
 | ieomd | ieomd.com | 8000 | IEOMD app (FastAPI serves built SPA + API) |
 | umami | analytics.sparkswarm.com | 3000 | Privacy-focused analytics |
-| noodle | callofthenoodle.com | 8000 | Bar rating app |
 | spark-swarm | swarm.sparkswarm.com | 8000 | Project dashboard + secrets manager |
 | synapse | chat.sparkswarm.com | 8008 | Matrix server (ops alerting) - planned |
-| btcpayserver | pay.sparkswarm.com | 49392 | Bitcoin payments - in progress |
+| noodle | callofthenoodle.com | 8000 | Bar rating app |
+| human-index | humanindex.io | 8000 | Private recall utility |
+| eshers-codex | esherscodex.com | 8000 | Math curriculum app |
+| richmiles-xyz | richmiles.xyz | 8000 | Static resume site |
+| bullshit-or-fit | bullshitorfit.com | 8000 | Landing + lead capture |
+| uptime-prober | - | - | Fleet uptime prober (Spark Swarm worker) |
+| email-monitor | - | - | IMAP polling + Matrix notifications (Spark Swarm worker) |
+| lead-scheduler | - | - | Lead outreach scheduler (Spark Swarm worker) |
 
 ## Secrets Management
 
