@@ -45,7 +45,7 @@ Pick a short service name (e.g. `myapp-web`, `myapp-backend`) and add it to `doc
 
 ```yaml
   myapp-web:
-    image: ghcr.io/richmiles/myapp-web:${MYAPP_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/myapp-web:${MYAPP_IMAGE_TAG:-latest}
     restart: unless-stopped
     networks: [internal]
     # If the web container needs to know its external URL:
@@ -55,7 +55,7 @@ Pick a short service name (e.g. `myapp-web`, `myapp-backend`) and add it to `doc
       - myapp-backend
 
   myapp-backend:
-    image: ghcr.io/richmiles/myapp-backend:${MYAPP_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/myapp-backend:${MYAPP_IMAGE_TAG:-latest}
     restart: unless-stopped
     networks: [internal]
     environment:
@@ -79,7 +79,7 @@ Compose:
 
 ```yaml
   myapi:
-    image: ghcr.io/richmiles/myapi:${MYAPI_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/myapi:${MYAPI_IMAGE_TAG:-latest}
     restart: unless-stopped
     networks: [internal]
     environment:

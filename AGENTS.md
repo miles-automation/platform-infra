@@ -69,7 +69,7 @@ Pre-stored secrets:
 
 ```yaml
   myapp:
-    image: ghcr.io/richmiles/myapp:${MYAPP_IMAGE_TAG:-latest}
+    image: ghcr.io/miles-automation/myapp:${MYAPP_IMAGE_TAG:-latest}
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${MYAPP_DB_USER:-myapp}:${MYAPP_DB_PASSWORD}@postgres:5432/${MYAPP_DB_NAME:-myapp_db}
@@ -186,7 +186,7 @@ docker logs platform-infra-<service>-1
 ### Wrong architecture (exec format error)
 The droplet is linux/amd64. Rebuild with:
 ```bash
-docker build --platform linux/amd64 -t ghcr.io/richmiles/<app>:latest .
+docker build --platform linux/amd64 -t ghcr.io/miles-automation/<app>:latest .
 ```
 
 ### Can't pull from ghcr.io (unauthorized)

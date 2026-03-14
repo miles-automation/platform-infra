@@ -41,7 +41,7 @@ jobs:
           must(claude_path.exists(), "missing CLAUDE.md")
           claude = claude_path.read_text()
 
-          must("ghcr.io/richmiles/ieomd-app" in compose, "docker-compose.yml should reference ghcr.io/richmiles/ieomd-app")
+          must("ghcr.io/miles-automation/ieomd-app" in compose, "docker-compose.yml should reference ghcr.io/miles-automation/ieomd-app")
           must("reverse_proxy ieomd:8000" in caddy, "Caddyfile should route ieomd to ieomd:8000")
           must("| ieomd |" in agents and "8000" in agents, "AGENTS.md should list ieomd on port 8000")
           must("| backend |" not in agents, "AGENTS.md should not list legacy backend service")
