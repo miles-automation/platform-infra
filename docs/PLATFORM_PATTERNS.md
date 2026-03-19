@@ -1260,7 +1260,7 @@ Migrations run automatically in the Docker entrypoint before the app starts.
 - **No auth needed**: drop deps.py, CSRF middleware, session management.
 - **Agent-first apps**: API-key auth is a first-class option; use `X-API-Key` plus hashed/scoped keys instead of sessions.
 - **No AI features**: skip section 9 entirely.
-- **Static sites** (e.g., richmiles.xyz): frontend-only, no backend patterns apply.
+- **No-database apps** (e.g., richmiles.xyz): FastAPI backend that proxies data from external APIs (Spark Swarm) with static fallback — skip sections 2, 8, 19 (models, pagination, migrations).
 - **Different frontend** (e.g., HTMX, no SPA): skip sections 11-15, adjust Dockerfile.
 
 **Project-specific exceptions:**
