@@ -375,6 +375,29 @@ services:
       spark-swarm:
         condition: service_started
 
+  # Container log shipper (ships ERROR/CRITICAL lines to Spark Swarm events API)
+  log-shipper:
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    mem_limit: 96m
+    command: ["python", "-m", "app.log_shipper"]
+    environment:
+      SPARK_SWARM_API_URL: http://spark-swarm:8000/api/v1
+      SPARK_SWARM_API_KEY: ${LOG_SHIPPER_API_KEY:?Set LOG_SHIPPER_API_KEY in .env}
+      LOG_SHIPPER_INTERVAL_SECONDS: ${LOG_SHIPPER_INTERVAL_SECONDS:-15}
+      LOG_SHIPPER_SERVICES: ${LOG_SHIPPER_SERVICES:-ieomd,noodle,human-index,eshers-codex,spark-swarm,richmiles-xyz,bullshit-or-fit}
+      LOG_SHIPPER_LEVEL_FILTER: ${LOG_SHIPPER_LEVEL_FILTER:-ERROR,CRITICAL,FATAL}
+      LOG_SHIPPER_MAX_PER_HOUR: ${LOG_SHIPPER_MAX_PER_HOUR:-50}
+      LOG_SHIPPER_STATE_PATH: /data/log-shipper/state.json
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - log_shipper_state:/data/log-shipper
+    networks:
+      - internal
+    depends_on:
+      spark-swarm:
+        condition: service_started
+
 networks:
   internal:
     driver: bridge
@@ -388,3 +411,4 @@ volumes:
   uptime_state:
   email_monitor_state:
   registry_data:
+  log_shipper_state:
