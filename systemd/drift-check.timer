@@ -1,0 +1,10 @@
+[Unit]
+Description=Run platform drift check daily at 09:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 09:00:00 UTC
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target
