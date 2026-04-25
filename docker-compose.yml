@@ -3,6 +3,7 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    mem_limit: 128m
     ports:
       - "80:80"
       - "443:443"
@@ -13,20 +14,16 @@ services:
       - caddy_config:/config
     networks:
       - internal
-    depends_on:
-      - ieomd
-      - umami
-      - noodle
-      - human-index
-      - richmiles-xyz
-      - bullshit-or-fit
-      - eshers-codex
-      - spark-swarm
+    # NOTE: No depends_on — Caddy handles missing upstreams gracefully
+    # (returns 502 per-domain, not a full outage). Previously depended on
+    # all 8 app services, meaning one crash-looping service prevented
+    # Caddy from starting and took ALL sites down.
 
   # Self-hosted Docker registry (GHCR fallback / GitHub-free deploys)
   registry:
     image: registry:2
     restart: unless-stopped
+    mem_limit: 64m
     environment:
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
       REGISTRY_HTTP_ADDR: 0.0.0.0:5000
@@ -46,6 +43,7 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 384m
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
@@ -65,6 +63,7 @@ services:
   ieomd:
     image: ghcr.io/miles-automation/ieomd-app:${IEOMD_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 256m
     environment:
       DATABASE_URL: postgresql+psycopg2://${IEOMD_DB_USER:-ieomd}:${IEOMD_DB_PASSWORD:?Set IEOMD_DB_PASSWORD in .env}@postgres:5432/${IEOMD_DB_NAME:-ieomd_db}
       CORS_ORIGINS: ${IEOMD_CORS_ORIGINS:-["https://ieomd.com"]}
@@ -95,6 +94,7 @@ services:
   umami:
     image: ghcr.io/umami-software/umami:postgresql-latest
     restart: unless-stopped
+    mem_limit: 256m
     environment:
       DATABASE_URL: postgresql://${UMAMI_DB_USER:-umami}:${UMAMI_DB_PASSWORD:?Set UMAMI_DB_PASSWORD in .env}@postgres:5432/${UMAMI_DB_NAME:-umami_db}
       APP_SECRET: ${UMAMI_APP_SECRET:?Set UMAMI_APP_SECRET in .env}
@@ -108,6 +108,7 @@ services:
   synapse:
     image: matrixdotorg/synapse:latest
     restart: unless-stopped
+    mem_limit: 384m
     environment:
       SYNAPSE_SERVER_NAME: chat.sparkswarm.com
       SYNAPSE_REPORT_STATS: "no"
@@ -131,6 +132,7 @@ services:
   noodle:
     image: ghcr.io/miles-automation/noodle-app:${NOODLE_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 192m
     environment:
       DATABASE_URL: postgresql+psycopg2://${NOODLE_DB_USER:-noodle}:${NOODLE_DB_PASSWORD:?Set NOODLE_DB_PASSWORD in .env}@postgres:5432/${NOODLE_DB_NAME:-noodle_db}
       ENVIRONMENT: production
@@ -144,6 +146,7 @@ services:
   human-index:
     image: ghcr.io/miles-automation/human-index-app:${HUMAN_INDEX_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 256m
     environment:
       DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_DB_USER:-human_index}:${HUMAN_INDEX_DB_PASSWORD:?Set HUMAN_INDEX_DB_PASSWORD in .env}@postgres:5432/${HUMAN_INDEX_DB_NAME:-human_index_db}
       CORS_ORIGINS: ${HUMAN_INDEX_CORS_ORIGINS:-["https://humanindex.io"]}
@@ -186,6 +189,7 @@ services:
   eshers-codex:
     image: ghcr.io/miles-automation/eshers-codex-app:${ESHERS_CODEX_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 192m
     environment:
       DATABASE_URL: postgresql+psycopg://${ESHERS_CODEX_DB_USER:-eshers_codex}:${ESHERS_CODEX_DB_PASSWORD:?Set ESHERS_CODEX_DB_PASSWORD in .env}@postgres:5432/${ESHERS_CODEX_DB_NAME:-eshers_codex_db}
       ENVIRONMENT: production
@@ -208,6 +212,7 @@ services:
   richmiles-xyz:
     image: ghcr.io/miles-automation/richmiles-xyz-app:${RICHMILES_XYZ_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 128m
     environment:
       SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY}
       SPARK_SWARM_API_URL: http://spark-swarm:8000/api/v1
@@ -218,6 +223,7 @@ services:
   bullshit-or-fit:
     image: ghcr.io/miles-automation/bullshit-or-fit:${BULLSHIT_OR_FIT_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 128m
     environment:
       SPARK_SWARM_API_URL: ${BULLSHIT_OR_FIT_SPARK_SWARM_API_URL:-http://spark-swarm:8000/api/v1}
       SPARK_SLUG: ${BULLSHIT_OR_FIT_SPARK_SLUG:-bullshit-or-fit}
@@ -229,6 +235,7 @@ services:
   spark-swarm:
     image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 512m
     environment:
       DATABASE_URL: postgresql://${SPARK_SWARM_DB_USER:-spark_swarm}:${SPARK_SWARM_DB_PASSWORD:?Set SPARK_SWARM_DB_PASSWORD in .env}@postgres:5432/${SPARK_SWARM_DB_NAME:-spark_swarm_db}
       AUTO_CREATE_TABLES: "true"
@@ -301,6 +308,7 @@ services:
   uptime-prober:
     image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 96m
     command: ["python", "-m", "app.uptime_prober"]
     environment:
       SPARK_SWARM_API_URL: http://spark-swarm:8000/api/v1
@@ -326,6 +334,7 @@ services:
   email-monitor:
     image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 96m
     command: ["python", "-m", "app.email_monitor"]
     environment:
       SPARK_SWARM_API_URL: http://spark-swarm:8000/api/v1
@@ -350,6 +359,7 @@ services:
   lead-scheduler:
     image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
     restart: unless-stopped
+    mem_limit: 192m
     command: ["python", "-m", "app.lead_scheduler"]
     environment:
       DATABASE_URL: postgresql://${SPARK_SWARM_DB_USER:-spark_swarm}:${SPARK_SWARM_DB_PASSWORD:?Set SPARK_SWARM_DB_PASSWORD in .env}@postgres:5432/${SPARK_SWARM_DB_NAME:-spark_swarm_db}
