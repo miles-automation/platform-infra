@@ -88,6 +88,17 @@ www.esherscodex.com {
 	redir https://esherscodex.com{uri} permanent
 }
 
+# Miles Automation - AI consultancy
+milesautomation.com {
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
+	reverse_proxy miles-automation:8000
+}
+
+www.milesautomation.com {
+	redir https://milesautomation.com{uri} permanent
+}
+
 forwhenever.com {
 	reverse_proxy for-whenever:8000
 }

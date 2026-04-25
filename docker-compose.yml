@@ -248,6 +248,17 @@ services:
     networks:
       - internal
 
+  # Miles Automation - AI consultancy landing page
+  miles-automation:
+    image: ghcr.io/miles-automation/miles-automation-app:${MILES_AUTOMATION_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY}
+      SPARK_SWARM_API_URL: http://spark-swarm:8000/api/v1
+    networks:
+      - internal
+
   # Bullshit or Fit - public landing + lead capture
   bullshit-or-fit:
     image: ghcr.io/miles-automation/bullshit-or-fit:${BULLSHIT_OR_FIT_IMAGE_TAG:-latest}
