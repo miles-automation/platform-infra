@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Spark Swarm PostgreSQL backup health check hourly
+Description=Run platform PostgreSQL backup health check hourly
 
 [Timer]
 OnBootSec=20min

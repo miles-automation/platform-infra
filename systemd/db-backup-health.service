@@ -1,5 +1,5 @@
 [Unit]
-Description=Spark Swarm PostgreSQL backup health check
+Description=Platform PostgreSQL backup health check (all databases)
 After=network-online.target
 Wants=network-online.target
 
