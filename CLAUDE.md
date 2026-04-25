@@ -10,7 +10,7 @@ This repo is the source of truth for the shared production droplet (`159.65.241.
 ## How deploys work (fleet standard)
 
 - Each app service uses `image: ghcr.io/miles-automation/<app>:{${APP_IMAGE_TAG}:-latest}` (tag is pinned in `/root/platform-infra/.env`).
-- App repos promote changes via their `Promote to Production` workflow, which:
+- App repos promote changes via `./bin/platform prod rollout <project> --tag sha-<short> --yes`, which:
   - Sets `<APP>_IMAGE_TAG=sha-...` in `/root/platform-infra/.env`
   - `docker compose pull <service>`
   - Runs migrations (if configured)
