@@ -47,7 +47,7 @@ send_matrix_alert() {
   room_id_encoded="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$MATRIX_ROOM_ID")"
   local txn_id="drift-check-$(date -u +%s)-$RANDOM"
   local body
-  body="$(printf '{"msgtype":"m.text","body":"%s"}' "$(printf "%s" "$message" | sed 's/"/\\"/g')")"
+  body="$(python3 -c 'import json, sys; print(json.dumps({"msgtype": "m.text", "body": sys.argv[1]}))' "$message")"
 
   curl -fsS -X PUT \
     -H "Authorization: Bearer ${MATRIX_ACCESS_TOKEN}" \
@@ -89,16 +89,18 @@ for service in "${!SERVICE_TAG_MAP[@]}"; do
   image="${SERVICE_IMAGE_MAP[$service]}"
   desired="${image}:${tag}"
 
-  # Get actual running image
+  # Get actual running image (compose v2 emits NDJSON: one object per line)
   actual=$(cd "$ROOT_DIR" && docker compose -f "$COMPOSE_FILE" ps --format json 2>/dev/null \
     | python3 -c "
 import json, sys
-data = json.loads(sys.stdin.read() or '[]')
-if isinstance(data, list):
-    for row in data:
-        if row.get('Service') == '$service':
-            print(row.get('Image', ''))
-            break
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    row = json.loads(line)
+    if row.get('Service') == '$service':
+        print(row.get('Image', ''))
+        break
 " 2>/dev/null || echo "")
 
   if [[ -z "$actual" ]]; then
@@ -108,20 +110,22 @@ if isinstance(data, list):
   fi
 done
 
-# Check for stopped/unhealthy containers
+# Check for stopped/unhealthy containers (compose v2 emits NDJSON)
 unhealthy=$(cd "$ROOT_DIR" && docker compose -f "$COMPOSE_FILE" ps --format json 2>/dev/null \
   | python3 -c "
 import json, sys
-data = json.loads(sys.stdin.read() or '[]')
-if isinstance(data, list):
-    for row in data:
-        state = row.get('State', '')
-        health = row.get('Health', '')
-        service = row.get('Service', '')
-        if state != 'running':
-            print(f'{service}: state={state}')
-        elif health and health != 'healthy' and health != '':
-            print(f'{service}: health={health}')
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    row = json.loads(line)
+    state = row.get('State', '')
+    health = row.get('Health', '')
+    service = row.get('Service', '')
+    if state != 'running':
+        print(f'{service}: state={state}')
+    elif health and health != 'healthy':
+        print(f'{service}: health={health}')
 " 2>/dev/null || echo "")
 
 while IFS= read -r line; do
