@@ -87,3 +87,11 @@ esherscodex.com {
 www.esherscodex.com {
 	redir https://esherscodex.com{uri} permanent
 }
+
+forwhenever.com {
+	reverse_proxy for-whenever:8000
+}
+
+www.forwhenever.com {
+	redir https://forwhenever.com{uri} permanent
+}

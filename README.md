@@ -27,12 +27,13 @@ Shared infrastructure for SparkSwarm projects. Manages Docker Compose services, 
 | Caddy | - | Reverse proxy with automatic HTTPS |
 | Postgres | - | Shared database (internal only) |
 | IEOMD | ieomd.com | Time-locked secret delivery ([repo](https://github.com/richmiles/in-the-event-of-my-death)) |
-| Noodle | callofthenoodle.com | Bar rating app (SQLite) |
+| For Whenever | forwhenever.com | Private messages and files for later ([repo](https://github.com/richmiles/for-whenever)) |
+| Noodle | callofthenoodle.com | Bar rating app |
 | Umami | analytics.sparkswarm.com | Privacy-focused analytics |
 | Spark Swarm | swarm.sparkswarm.com | Project dashboard + secrets manager |
 | Human Index | humanindex.io | Private recall utility (subjects + observations) |
 | Esher's Codex | esherscodex.com | Math curriculum app |
-| richmiles.xyz | richmiles.xyz | Static resume site |
+| richmiles.xyz | richmiles.xyz | Portfolio site + public API |
 | Bullshit or Fit | bullshitorfit.com | Resume screening landing page + lead capture |
 | Synapse | chat.sparkswarm.com | Matrix server (ops alerting) - planned |
 | Uptime prober | - | Fleet health checks + Matrix alerts (Spark Swarm worker) |
@@ -50,6 +51,7 @@ Shared S3-compatible bucket (`platform-storage`) for file storage. Services use 
 | Service | Prefix | Example Key |
 |---------|--------|-------------|
 | IEOMD | `ieomd/` | `ieomd/attachments/{uuid}` |
+| For Whenever | `for-whenever/` | `for-whenever/attachments/{uuid}` |
 
 Configure in `.env`:
 - `SPACES_BUCKET` - Bucket name (default: `platform-storage`)

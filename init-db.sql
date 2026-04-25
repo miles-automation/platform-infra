@@ -40,3 +40,7 @@ GRANT ALL PRIVILEGES ON DATABASE eshers_codex_db TO eshers_codex;
 CREATE USER noodle WITH PASSWORD 'CHANGE_ME_NOODLE';
 CREATE DATABASE noodle_db OWNER noodle;
 GRANT ALL PRIVILEGES ON DATABASE noodle_db TO noodle;
+
+CREATE USER for_whenever WITH PASSWORD '${FOR_WHENEVER_DB_PASSWORD}';
+CREATE DATABASE for_whenever_db OWNER for_whenever;
+GRANT ALL PRIVILEGES ON DATABASE for_whenever_db TO for_whenever;

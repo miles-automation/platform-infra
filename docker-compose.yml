@@ -90,6 +90,35 @@ services:
       postgres:
         condition: service_healthy
 
+  # For Whenever - private messages and files for later
+  for-whenever:
+    image: ghcr.io/richmiles/for-whenever-app:${FOR_WHENEVER_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${FOR_WHENEVER_DB_USER:-for_whenever}:${FOR_WHENEVER_DB_PASSWORD:?Set FOR_WHENEVER_DB_PASSWORD in .env}@postgres:5432/${FOR_WHENEVER_DB_NAME:-for_whenever_db}
+      CORS_ORIGINS: ${FOR_WHENEVER_CORS_ORIGINS:-["https://forwhenever.com"]}
+      OBJECT_STORAGE_ENABLED: ${FOR_WHENEVER_OBJECT_STORAGE_ENABLED:-${OBJECT_STORAGE_ENABLED:-false}}
+      OBJECT_STORAGE_ENDPOINT: https://nyc3.digitaloceanspaces.com
+      OBJECT_STORAGE_BUCKET: ${SPACES_BUCKET:-platform-storage}
+      OBJECT_STORAGE_PREFIX: ${FOR_WHENEVER_OBJECT_STORAGE_PREFIX:-for-whenever}
+      OBJECT_STORAGE_ACCESS_KEY: ${SPACES_ACCESS_KEY:-}
+      OBJECT_STORAGE_SECRET_KEY: ${SPACES_SECRET_KEY:-}
+      OBJECT_STORAGE_REGION: nyc3
+      MATRIX_HOMESERVER_URL: ${MATRIX_HOMESERVER_URL:-}
+      MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
+      MATRIX_ROOM_ID: ${MATRIX_ROOM_ID:-}
+      ENVIRONMENT: production
+      PUBLIC_BASE_URL: ${FOR_WHENEVER_PUBLIC_BASE_URL:-https://forwhenever.com}
+      BTCPAY_WEBHOOK_SECRET: ${BTCPAY_WEBHOOK_SECRET:-}
+      STRIPE_SECRET_KEY: ${FOR_WHENEVER_STRIPE_SECRET_KEY:-${STRIPE_SECRET_KEY:-}}
+      STRIPE_WEBHOOK_SECRET: ${FOR_WHENEVER_STRIPE_WEBHOOK_SECRET:-${STRIPE_WEBHOOK_SECRET:-}}
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Umami - Privacy-focused analytics
   umami:
     image: ghcr.io/umami-software/umami:postgresql-latest
