@@ -45,6 +45,16 @@ Shared infrastructure for SparkSwarm projects. Manages Docker Compose services, 
 ### Postgres
 Each service gets its own database and user (defined in `init-db.sql`). Services connect via `DATABASE_URL` environment variable.
 
+### Email
+Mailbox hosting stays on MXRoute for inboxes, aliases, and catch-alls. Transactional sending and
+Spark Swarm inbound webhook handling standardize on Postmark.
+
+Operational rules:
+- Store provider credentials in Spark Swarm secrets, not in repo-tracked files.
+- Inject app-specific Postmark runtime secrets through `.env` only when a container needs them at
+  startup, such as `HUMAN_INDEX_POSTMARK_API_TOKEN`.
+- Treat Mailgun settings as legacy fallback only during the migration window.
+
 ### DigitalOcean Spaces (Object Storage)
 Shared S3-compatible bucket (`platform-storage`) for file storage. Services use a prefix to isolate their objects:
 

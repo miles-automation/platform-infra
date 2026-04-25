@@ -43,6 +43,11 @@ This repo manages shared infrastructure for all SparkSwarm projects on a single 
 
 **Use Spark Swarm for secrets** instead of manually editing `.env` files.
 
+Email standard:
+- MXRoute hosts inboxes, aliases, and catch-alls.
+- Postmark is the default provider for transactional outbound email and Spark Swarm inbound webhook handling.
+- Treat Mailgun configuration as a temporary fallback unless the user explicitly asks to keep or restore it.
+
 ```bash
 # Store a secret
 curl -X POST https://swarm.sparkswarm.com/api/v1/secrets \
