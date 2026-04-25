@@ -206,6 +206,7 @@ services:
       CANVAS_API_KEY: ${CANVAS_API_KEY:-}
       VAPID_PRIVATE_KEY: ${HUMAN_INDEX_VAPID_PRIVATE_KEY:-}
       VAPID_PUBLIC_KEY: ${HUMAN_INDEX_VAPID_PUBLIC_KEY:-}
+      VAULT_MASTER_KEY: ${VAULT_MASTER_KEY:-}
     volumes:
       - human_index_data:/app/backend/data
     networks:
