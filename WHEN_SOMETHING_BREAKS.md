@@ -173,31 +173,63 @@ If a deployment broke something:
 
 ## CI Runners (do-1gb-runner-main)
 
-Self-hosted GitHub Actions runners live on a separate droplet (`167.172.224.151`), not the production platform droplet.
+Self-hosted GitHub Actions runners live on a separate droplet (`167.172.224.151`), not the production platform droplet. There is one **org-level** runner — `actions.runner.miles-automation.do-1gb-org-runner` — that services every `miles-automation/*` repo via the `do-1gb-canary` label. (The older per-repo `actions.runner.richmiles-*` services from `setup-runners.sh` are obsolete.)
 
-### Runner not picking up jobs
+### Workflow defaults (as of 2026-04-27)
+
+All workflows now default to `ubuntu-latest` — `self-hosted-canary` is an opt-in `workflow_dispatch` choice. Runs land on the canary only when:
+- A manual dispatch explicitly picks `runner_target: self-hosted-canary`, or
+- A schedule/push targets a workflow that hasn't been migrated yet (none currently).
+
+So if the runner is offline, **CI keeps working on ubuntu-latest** — there is no urgency to restart it. Don't restart it just to keep `do-1gb-canary` "available" if you're not actively using it.
+
+### Diagnosing runner state
 
 ```bash
-# Check which runners are running
-ssh root@167.172.224.151 "systemctl list-units --type=service --state=running | grep actions.runner"
+# What does GitHub think? (org-level)
+gh api orgs/miles-automation/actions/runners
 
-# Restart a specific runner (e.g., spark-swarm)
-ssh root@167.172.224.151 "systemctl restart 'actions.runner.richmiles-spark-swarm.*'"
+# Service status on the box
+ssh root@167.172.224.151 "systemctl status actions.runner.miles-automation.do-1gb-org-runner.service --no-pager -l"
 
-# Check runner logs
-ssh root@167.172.224.151 "journalctl -u 'actions.runner.richmiles-spark-swarm.*' --tail 50"
-
-# Restart ALL runners
-ssh root@167.172.224.151 "systemctl restart 'actions.runner.richmiles-*'"
+# Tail recent activity
+ssh root@167.172.224.151 "journalctl -u actions.runner.miles-automation.do-1gb-org-runner.service -n 100 --no-pager"
 ```
 
-### Runner offline in GitHub
+### Runner failed (OOM-kill — common failure mode)
 
-If GitHub shows the runner as offline but systemd shows it running, the runner may have lost its registration token. Re-run the setup script:
+The droplet is 1GB RAM with no swap. A Docker build can push peak memory past the limit and the kernel OOM-killer terminates the runner. systemd marks the unit `failed` (not `crashed`), and the unit has no `Restart=on-failure`, so it stays down. Symptoms in `gh api orgs/miles-automation/actions/runners`: `total_count: 0`. Symptoms in `systemctl status`: `Active: failed (Result: oom-kill)`.
+
+Recovery:
 
 ```bash
-# From your local machine
-GITHUB_TOKEN=$(gh auth token) ssh root@167.172.224.151 "GITHUB_TOKEN='${GITHUB_TOKEN}' bash /root/setup-runners.sh"
+# 1) Kill stale leftover workers from the OOM (Runner.Worker, docker, docker-buildx, node — common after oom-kill)
+ssh root@167.172.224.151 "pkill -9 -f 'Runner\\.Worker|docker-buildx' || true; sleep 2; ps aux | grep -E 'Runner|docker-buildx' | grep -v grep || echo '(clean)'"
+
+# 2) Reset the failed state and start the service
+ssh root@167.172.224.151 "systemctl reset-failed actions.runner.miles-automation.do-1gb-org-runner.service && systemctl start actions.runner.miles-automation.do-1gb-org-runner.service"
+
+# 3) Confirm it registered with GitHub
+gh api orgs/miles-automation/actions/runners
+# Expect total_count >= 1, status "online"
+```
+
+If it OOMs again immediately, either reduce concurrent jobs or fix the underlying memory floor (add swap, resize droplet to s-1vcpu-2gb).
+
+### Runner offline in GitHub but service is running
+
+The runner may have lost its registration. Reconfigure (no re-installation):
+
+```bash
+# Get a fresh registration token
+gh api -X POST orgs/miles-automation/actions/runners/registration-token --jq .token
+
+# On the droplet, re-register (replaces existing registration)
+ssh root@167.172.224.151
+cd /opt/actions-runner-org
+sudo -u runner ./config.sh remove --token <removal-token-from-above-call>  # or use --unattended with a fresh PAT
+sudo -u runner ./config.sh --url https://github.com/miles-automation --token <reg-token> --name do-1gb-org-runner --labels self-hosted,linux,x64,do-1gb-canary,platform --unattended --replace
+./svc.sh start
 ```
 
 ### Disk full on runner droplet
@@ -205,18 +237,21 @@ GITHUB_TOKEN=$(gh auth token) ssh root@167.172.224.151 "GITHUB_TOKEN='${GITHUB_T
 Docker build caches can fill the disk. Clean up:
 
 ```bash
-ssh root@167.172.224.151 "docker system prune -f && df -h /"
+ssh root@167.172.224.151 "docker system prune -af && df -h /"
 ```
 
 ### Memory pressure
 
-The runner droplet has 1GB RAM. If builds are OOM-killing, check usage:
+The runner droplet has 1GB RAM **with no swap configured**. If builds are OOM-killing, check usage:
 
 ```bash
-ssh root@167.172.224.151 "free -h && ps aux --sort=-%mem | head 10"
+ssh root@167.172.224.151 "free -h && ps aux --sort=-%mem | head -n 10"
 ```
 
-Consider upgrading the droplet if this happens frequently.
+Mitigations (in increasing order of disruption):
+1. Add a 1G swap file: `ssh root@167.172.224.151 "fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab"`
+2. Add `Restart=on-failure` + `RestartSec=10s` to `/etc/systemd/system/actions.runner.miles-automation.do-1gb-org-runner.service` so the next OOM auto-recovers.
+3. Resize droplet to s-1vcpu-2gb.
 
 ## Emergency Contacts
 
