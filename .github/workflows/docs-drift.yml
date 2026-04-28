@@ -10,14 +10,14 @@ on:
         description: "Runner target for manual runs"
         required: true
         type: choice
-        default: "self-hosted-canary"
+        default: "ubuntu-latest"
         options:
           - self-hosted-canary
           - ubuntu-latest
 
 jobs:
   docs_drift:
-    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_target == 'ubuntu-latest' && '"ubuntu-latest"' || '["self-hosted","linux","x64","do-1gb-canary"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_target == 'self-hosted-canary' && '["self-hosted","linux","x64","do-1gb-canary"]' || '"ubuntu-latest"') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
