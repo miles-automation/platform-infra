@@ -30,7 +30,7 @@ Shared infrastructure for SparkSwarm projects. Manages Docker Compose services, 
 | For Whenever | forwhenever.com | Private messages and files for later ([repo](https://github.com/richmiles/for-whenever)) |
 | Noodle | callofthenoodle.com | Bar rating app |
 | Umami | analytics.sparkswarm.com | Privacy-focused analytics |
-| Spark Swarm | swarm.sparkswarm.com | Project dashboard + secrets manager |
+| Spark Swarm | sparkswarm.com | Project dashboard + secrets manager |
 | Human Index | humanindex.io | Private recall utility (subjects + observations) |
 | Esher's Codex | esherscodex.com | Math curriculum app |
 | richmiles.xyz | richmiles.xyz | Portfolio site + public API |

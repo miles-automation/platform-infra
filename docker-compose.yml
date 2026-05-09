@@ -227,7 +227,7 @@ services:
       CORS_ORIGINS: https://esherscodex.com
       COOKIE_NAME: eshers_codex_learner
       COOKIE_MAX_AGE_DAYS: 365
-      SPARK_SWARM_OAUTH_BASE_URL: https://swarm.sparkswarm.com
+      SPARK_SWARM_OAUTH_BASE_URL: https://sparkswarm.com
       SPARK_SWARM_OAUTH_CLIENT_ID: eshers-codex-web
       SPARK_SWARM_OAUTH_CLIENT_SECRET: ${ESHERS_CODEX_SPARK_SWARM_OAUTH_CLIENT_SECRET:?Set ESHERS_CODEX_SPARK_SWARM_OAUTH_CLIENT_SECRET in .env}
       SPARK_SWARM_OAUTH_REDIRECT_URI: https://esherscodex.com/auth/callback

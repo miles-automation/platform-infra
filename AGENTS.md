@@ -28,7 +28,7 @@ This repo manages shared infrastructure for all SparkSwarm projects on a single 
 | postgres | - | 5432 | Shared DB (internal only) |
 | ieomd | ieomd.com | 8000 | IEOMD app (FastAPI serves built SPA + API) |
 | umami | analytics.sparkswarm.com | 3000 | Privacy-focused analytics |
-| spark-swarm | swarm.sparkswarm.com | 8000 | Project dashboard + secrets manager |
+| spark-swarm | sparkswarm.com | 8000 | Project dashboard + secrets manager |
 | synapse | chat.sparkswarm.com | 8008 | Matrix server (ops alerting) - planned |
 | noodle | callofthenoodle.com | 8000 | Bar rating app |
 | human-index | humanindex.io | 8000 | Private recall utility |
@@ -50,17 +50,17 @@ Email standard:
 
 ```bash
 # Store a secret
-curl -X POST https://swarm.sparkswarm.com/api/v1/secrets \
+curl -X POST https://sparkswarm.com/api/v1/secrets \
   -H "X-API-Key: $SPARK_SWARM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name": "MYAPP_DB_PASSWORD", "value": "secret", "project": "myapp", "environment": "production"}'
 
 # Get a secret
-curl "https://swarm.sparkswarm.com/api/v1/secrets/resolve/MYAPP_DB_PASSWORD?project=myapp&environment=production" \
+curl "https://sparkswarm.com/api/v1/secrets/resolve/MYAPP_DB_PASSWORD?project=myapp&environment=production" \
   -H "X-API-Key: $SPARK_SWARM_API_KEY"
 
 # Export all secrets for a project as .env
-curl "https://swarm.sparkswarm.com/api/v1/secrets/export/dotenv?project=myapp&environment=production" \
+curl "https://sparkswarm.com/api/v1/secrets/export/dotenv?project=myapp&environment=production" \
   -H "X-API-Key: $SPARK_SWARM_API_KEY"
 ```
 
@@ -160,7 +160,7 @@ SparkSwarm Secrets API is the source of truth for production secrets, but servic
 Workflow:
 1) Store/update secrets in SparkSwarm:
 ```bash
-curl -X POST https://swarm.sparkswarm.com/api/v1/secrets \
+curl -X POST https://sparkswarm.com/api/v1/secrets \
   -H "X-API-Key: $SPARK_SWARM_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name":"HUMAN_INDEX_DB_PASSWORD","value":"generated-password","project":"human-index","environment":"production"}'
@@ -168,7 +168,7 @@ curl -X POST https://swarm.sparkswarm.com/api/v1/secrets \
 
 2) Export to dotenv (review first):
 ```bash
-curl -s "https://swarm.sparkswarm.com/api/v1/secrets/export/dotenv?project=human-index&environment=production" \
+curl -s "https://sparkswarm.com/api/v1/secrets/export/dotenv?project=human-index&environment=production" \
   -H "X-API-Key: $SPARK_SWARM_API_KEY"
 ```
 
