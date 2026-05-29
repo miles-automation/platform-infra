@@ -19,8 +19,8 @@ jobs:
   docs_drift:
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_target == 'ubuntu-latest' && '"ubuntu-latest"' || '["self-hosted","linux","x64","do-1gb-canary"]') }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Docs drift (infra)
