@@ -1,0 +1,2579 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+try:
+    import tomllib  # py3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    print("Error: Python 3.11+ is required (tomllib missing).", file=sys.stderr)
+    raise
+
+
+def _eprint(*args: object) -> None:
+    print(*args, file=sys.stderr)
+
+
+def find_workspace_root(start_dir: Path) -> Path:
+    current = start_dir.resolve()
+    if current.is_file():
+        current = current.parent
+
+    while True:
+        candidate = current / "platform.toml"
+        if candidate.exists():
+            return current
+        if current.parent == current:
+            raise FileNotFoundError("platform.toml not found in any parent directory")
+        current = current.parent
+
+
+def load_config(workspace_root: Path, config_path: str | None) -> dict[str, Any]:
+    path = Path(config_path) if config_path else (workspace_root / "platform.toml")
+    data = tomllib.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError("platform.toml must decode to a table/object at the top level")
+    return data  # type: ignore[return-value]
+
+
+def cfg_get(cfg: dict[str, Any], path: str, default: Any = None) -> Any:
+    cur: Any = cfg
+    for part in path.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
+def project_cfg(cfg: dict[str, Any], project_key: str) -> dict[str, Any]:
+    projects = cfg.get("projects")
+    if not isinstance(projects, dict) or project_key not in projects:
+        raise KeyError(f"Unknown project: {project_key!r} (define it under [projects.{project_key}])")
+    project = projects[project_key]
+    if not isinstance(project, dict):
+        raise ValueError(f"[projects.{project_key}] must be a table/object")
+    return project
+
+
+def sh(cmd: list[str], *, cwd: Path | None, dry_run: bool, quiet: bool, check: bool = True) -> int:
+    rendered = shlex.join(cmd)
+    if not quiet:
+        print(f"+ {rendered}", file=sys.stderr)
+    if dry_run:
+        return 0
+    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None)
+    if check and proc.returncode != 0:
+        raise SystemExit(proc.returncode)
+    return proc.returncode
+
+
+def sh_capture(cmd: list[str], *, cwd: Path | None, dry_run: bool, quiet: bool, check: bool = True) -> str:
+    rendered = shlex.join(cmd)
+    if not quiet:
+        print(f"+ {rendered}", file=sys.stderr)
+    if dry_run:
+        return ""
+    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True)
+    if check and proc.returncode != 0:
+        raise SystemExit(proc.returncode)
+    return proc.stdout
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def sanitize_branch_component(value: str) -> str:
+    value = value.strip().lower()
+    out = []
+    for ch in value:
+        if ch.isalnum() or ch in "-_./":
+            out.append(ch)
+        elif ch.isspace():
+            out.append("-")
+        else:
+            out.append("-")
+    sanitized = "".join(out)
+    while "--" in sanitized:
+        sanitized = sanitized.replace("--", "-")
+    return sanitized.strip("-") or "work"
+
+
+def resolve_repo_dir(workspace_root: Path, proj: dict[str, Any]) -> Path:
+    repo_dir = proj.get("repo_dir")
+    if not isinstance(repo_dir, str) or not repo_dir:
+        raise ValueError("project config missing string repo_dir")
+    return (workspace_root / repo_dir).resolve()
+
+
+def worktree_path(workspace_root: Path, proj: dict[str, Any], topic: str) -> Path:
+    prefix = proj.get("worktree_prefix")
+    if not isinstance(prefix, str) or not prefix:
+        raise ValueError("project config missing string worktree_prefix (required for wt commands)")
+    return (workspace_root / f"{prefix}{topic}").resolve()
+
+
+def detect_current_worktree_root(workspace_root: Path, project_key: str, proj: dict[str, Any]) -> Path | None:
+    prefix = proj.get("worktree_prefix")
+    if not isinstance(prefix, str) or not prefix:
+        return None
+
+    try:
+        rel = Path(os.getcwd()).resolve().relative_to(workspace_root)
+    except Exception:
+        return None
+
+    # Worktrees are expected to live at paths like:
+    #   <worktree_prefix><topic>/...
+    # Example worktree_prefix: "wt/ieomd-" -> worktree dir name "ieomd-212"
+    parts = rel.parts
+    if len(parts) < 2:
+        return None
+
+    prefix_parts = Path(prefix).parts
+    if not prefix_parts:
+        return None
+
+    base_parts = prefix_parts[:-1]
+    name_prefix = prefix_parts[-1]
+    if base_parts:
+        if parts[: len(base_parts)] != base_parts:
+            return None
+        candidate_name = parts[len(base_parts)]
+    else:
+        candidate_name = parts[0]
+
+    if not candidate_name.startswith(name_prefix.rstrip("/")):
+        return None
+
+    return (workspace_root / Path(*base_parts) / candidate_name).resolve()
+
+
+def cmd_projects_list(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    cfg = args.cfg
+    projects = cfg.get("projects")
+    if not isinstance(projects, dict) or not projects:
+        print("No projects defined in platform.toml")
+        return
+
+    for key in sorted(projects.keys()):
+        proj = project_cfg(cfg, key)
+        name = proj.get("display_name") or key
+        repo_dir = proj.get("repo_dir") or "?"
+        domains = proj.get("domains")
+        domains_str = ""
+        if isinstance(domains, list) and domains:
+            domains_str = f" ({', '.join(str(d) for d in domains)})"
+        print(f"{key}\t{name}\t{repo_dir}{domains_str}")
+
+
+def cmd_wt_list(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    proj = project_cfg(args.cfg, args.project)
+    repo = resolve_repo_dir(ws, proj)
+    sh(["git", "-C", str(repo), "worktree", "list"], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def cmd_wt_path(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    proj = project_cfg(args.cfg, args.project)
+    print(worktree_path(ws, proj, args.topic))
+
+
+def cmd_wt_add(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    cfg = args.cfg
+    proj = project_cfg(cfg, args.project)
+
+    repo = resolve_repo_dir(ws, proj)
+    topic = args.topic
+    path = Path(args.path).resolve() if args.path else worktree_path(ws, proj, topic)
+
+    default_branch = proj.get("default_branch") if isinstance(proj.get("default_branch"), str) else "main"
+    from_ref = args.from_ref or f"origin/{default_branch}"
+    branch = args.branch or f"feature/{sanitize_branch_component(topic)}"
+
+    if args.fetch:
+        sh(["git", "-C", str(repo), "fetch", "origin"], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+    if path.exists():
+        raise SystemExit(f"Refusing to create worktree: path already exists: {path}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sh(
+        ["git", "-C", str(repo), "worktree", "add", str(path), "-b", branch, from_ref],
+        cwd=None,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
+
+
+def cmd_wt_rm(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    proj = project_cfg(args.cfg, args.project)
+    repo = resolve_repo_dir(ws, proj)
+    path = Path(args.path).resolve() if args.path else worktree_path(ws, proj, args.topic)
+
+    cmd = ["git", "-C", str(repo), "worktree", "remove", str(path)]
+    if args.force:
+        cmd.append("--force")
+    sh(cmd, cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    cfg = args.cfg
+    proj = project_cfg(cfg, args.project)
+
+    chosen: Path | None = None
+    if args.wt:
+        chosen = worktree_path(ws, proj, args.wt)
+    else:
+        chosen = detect_current_worktree_root(ws, args.project, proj)
+
+    if chosen is None:
+        chosen = resolve_repo_dir(ws, proj)
+
+    target = args.target
+    extra = list(getattr(args, "passthrough", []) or [])
+
+    sh(["make", "-C", str(chosen), target, *extra], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def cmd_check(args: argparse.Namespace) -> None:
+    cfg = args.cfg
+    projects = cfg.get("projects")
+    if not isinstance(projects, dict) or not projects:
+        raise SystemExit("No projects defined in platform.toml")
+
+    keys: list[str]
+    if args.project:
+        keys = [args.project]
+    else:
+        keys = sorted(projects.keys())
+
+    failed: list[str] = []
+    for key in keys:
+        if key == "platform-infra":
+            # infra doesn't have a consistent check target; skip unless explicitly requested.
+            if not args.project:
+                continue
+        try:
+            cmd_run(
+                argparse.Namespace(
+                    workspace_root=args.workspace_root,
+                    cfg=args.cfg,
+                    project=key,
+                    target=args.target,
+                    wt=args.wt,
+                    passthrough=[],
+                    dry_run=args.dry_run,
+                    quiet=args.quiet,
+                )
+            )
+        except SystemExit as e:
+            if e.code not in (0, None):
+                failed.append(key)
+
+    if failed:
+        raise SystemExit(f"Checks failed: {', '.join(failed)}")
+
+
+def infra_compose_file(args: argparse.Namespace) -> str:
+    compose_file = cfg_get(args.cfg, "infra.compose_file")
+    if not isinstance(compose_file, str) or not compose_file:
+        raise ValueError("Missing infra.compose_file in platform.toml")
+    return str((args.workspace_root / compose_file).resolve())
+
+
+def cmd_infra_ps(args: argparse.Namespace) -> None:
+    compose = infra_compose_file(args)
+    sh(["docker", "compose", "-f", compose, "ps"], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def cmd_infra_logs(args: argparse.Namespace) -> None:
+    compose = infra_compose_file(args)
+    cmd = ["docker", "compose", "-f", compose, "logs", "--tail", str(args.tail)]
+    if args.follow:
+        cmd.append("-f")
+    cmd.append(args.service)
+    sh(cmd, cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def prod_host(args: argparse.Namespace) -> str:
+    host = cfg_get(args.cfg, "prod.droplet_host")
+    if not isinstance(host, str) or not host:
+        raise ValueError("Missing prod.droplet_host in platform.toml")
+    return host
+
+
+def prod_compose_file(args: argparse.Namespace) -> str:
+    compose_file = cfg_get(args.cfg, "prod.platform_infra_compose_file")
+    if not isinstance(compose_file, str) or not compose_file:
+        raise ValueError("Missing prod.platform_infra_compose_file in platform.toml")
+    return compose_file
+
+
+def prod_dir(args: argparse.Namespace) -> str:
+    dir_ = cfg_get(args.cfg, "prod.platform_infra_dir")
+    if not isinstance(dir_, str) or not dir_:
+        raise ValueError("Missing prod.platform_infra_dir in platform.toml")
+    return dir_
+
+
+def require_yes(args: argparse.Namespace, what: str) -> None:
+    if getattr(args, "yes", False):
+        return
+    raise SystemExit(f"Refusing to {what} without --yes")
+
+
+def cmd_prod_ps(args: argparse.Namespace) -> None:
+    host = prod_host(args)
+    sh(["ssh", host, "docker", "ps"], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def cmd_prod_logs(args: argparse.Namespace) -> None:
+    host = prod_host(args)
+    compose = prod_compose_file(args)
+    cmd = ["ssh", host, "docker", "compose", "-f", compose, "logs", "--tail", str(args.tail)]
+    if args.follow:
+        cmd.append("-f")
+    cmd.append(args.service)
+    sh(cmd, cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def cmd_prod_sync_infra(args: argparse.Namespace) -> None:
+    if not args.dry_run:
+        require_yes(args, "sync infra to prod")
+
+    ws = args.workspace_root
+    host = prod_host(args)
+    dest_dir = prod_dir(args).rstrip("/") + "/"
+    src = str((ws / "repos/platform-infra/").resolve()) + "/"
+
+    cmd = [
+        "rsync",
+        "-avz",
+        "--exclude=.git",
+        "--exclude=.env",
+    ]
+    if args.dry_run:
+        cmd.append("--dry-run")
+    cmd.extend([src, f"{host}:{dest_dir}"])
+    sh(cmd, cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def resolve_service_from_target(cfg: dict[str, Any], target: str) -> str:
+    projects = cfg.get("projects")
+    if isinstance(projects, dict) and target in projects:
+        proj = project_cfg(cfg, target)
+        service = proj.get("infra_service")
+        if isinstance(service, str) and service:
+            return service
+    return target
+
+
+def secrets_api_base(args: argparse.Namespace) -> str:
+    base = cfg_get(args.cfg, "secrets.api_base_url")
+    if not isinstance(base, str) or not base:
+        raise ValueError("Missing secrets.api_base_url in platform.toml")
+    return base.rstrip("/")
+
+
+def secrets_project_name(cfg: dict[str, Any], project_key: str) -> str:
+    proj = project_cfg(cfg, project_key)
+    name = proj.get("secrets_project") or project_key
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"Invalid secrets_project for project {project_key!r}")
+    return name
+
+
+def cmd_secrets_required(args: argparse.Namespace) -> None:
+    proj = project_cfg(args.cfg, args.project)
+    required = proj.get("required_secrets")
+    if not isinstance(required, list) or not required:
+        raise SystemExit(f"No required_secrets configured for project {args.project!r}")
+    for item in required:
+        print(str(item))
+
+
+def cmd_secrets_put(args: argparse.Namespace) -> None:
+    base = secrets_api_base(args)
+    project = secrets_project_name(args.cfg, args.project)
+    env = args.environment
+    name = args.name
+
+    if args.stdin:
+        value = sys.stdin.read()
+    else:
+        value = os.getenv(name, "")
+    value = value.rstrip("\n")
+    if not value:
+        raise SystemExit(f"Missing secret value. Provide via stdin (--stdin) or env var {name!r}.")
+
+    api_key = _require_env("SPARK_SWARM_API_KEY")
+    if args.dry_run:
+        if not args.quiet:
+            print(f"+ POST {base}/secrets (project={project!r} env={env!r} name={name!r})", file=sys.stderr)
+        return
+
+    _http_json(
+        method="POST",
+        url=f"{base}/secrets",
+        headers={"X-API-Key": api_key},
+        data={"name": name, "value": value, "project": project, "environment": env},
+    )
+
+
+def cmd_secrets_export_dotenv(args: argparse.Namespace) -> None:
+    base = secrets_api_base(args)
+    project = secrets_project_name(args.cfg, args.project)
+    env = args.environment
+    api_key = _require_env("SPARK_SWARM_API_KEY")
+    if not args.quiet:
+        print(
+            f"+ GET {base}/secrets/export/dotenv (project={project!r} env={env!r})",
+            file=sys.stderr,
+        )
+    if args.dry_run:
+        return
+
+    text = _swarm_export_dotenv(api_key=api_key, project=project, environment=env, base=base)
+    # Print without extra formatting so it can be piped.
+    print(text, end="")
+
+
+def cmd_secrets_list(args: argparse.Namespace) -> None:
+    base = secrets_api_base(args)
+    api_key = _require_env("SPARK_SWARM_API_KEY")
+
+    project = secrets_project_name(args.cfg, args.project)
+    env = args.environment
+
+    # Server is expected to return metadata only; we still only print names.
+    # Prefer filtering server-side, but tolerate APIs that ignore unknown params.
+    url = f"{base}/secrets?project={urllib.parse.quote(project)}&environment={urllib.parse.quote(env)}"
+    data = _http_json(method="GET", url=url, headers={"X-API-Key": api_key})
+
+    result = data.get("result", data.get("items", data))
+    if isinstance(result, dict):
+        # Some APIs wrap the list under another key.
+        for k in ("secrets", "data", "results"):
+            if isinstance(result.get(k), list):
+                result = result[k]
+                break
+
+    if not isinstance(result, list):
+        raise SystemExit(f"Unexpected secrets list response shape: {list(data.keys())}")
+
+    names: list[str] = []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+
+    for name in sorted(set(names)):
+        print(name)
+
+
+GH_IDENTITY_SECRETS = {
+    "codex": "MILES_AUTOMATION_CODEX_GITHUB_TOKEN",
+    "claude": "MILES_AUTOMATION_CLAUDE_GITHUB_TOKEN",
+}
+
+GH_IDENTITY_LOGINS = {
+    "codex": "milesautomation-codex",
+    "claude": "milesautomation-claude",
+}
+
+SPARK_SWARM_IDENTITY_SECRETS = {
+    "codex": "MILES_AUTOMATION_CODEX_SPARK_SWARM_MCP_API_KEY",
+    "claude": "MILES_AUTOMATION_CLAUDE_CODE_SPARK_SWARM_MCP_API_KEY",
+}
+
+SPARK_SWARM_IDENTITY_ACTORS = {
+    "codex": "codex-default",
+    "claude": "claude-code",
+}
+
+
+def _resolve_sparkswarm_secret_value(
+    args: argparse.Namespace,
+    *,
+    name: str,
+    project: str,
+    environment: str,
+) -> str:
+    base = secrets_api_base(args)
+    api_key = _require_env("SPARK_SWARM_API_KEY")
+    url = (
+        f"{base}/secrets/resolve/{urllib.parse.quote(name)}"
+        f"?project={urllib.parse.quote(project)}&environment={urllib.parse.quote(environment)}"
+    )
+    data = _http_json(method="GET", url=url, headers={"X-API-Key": api_key})
+    value = data.get("value")
+    if not isinstance(value, str) or not value:
+        raise SystemExit(f"Secret {name!r} resolved without a usable value")
+    return value
+
+
+def cmd_gh_identity(args: argparse.Namespace) -> None:
+    identity = args.identity
+    secret_name = GH_IDENTITY_SECRETS.get(identity)
+    if not secret_name:
+        raise SystemExit(f"Unknown GitHub identity: {identity!r}")
+
+    gh_args = list(getattr(args, "gh_args", []) or [])
+    if gh_args and gh_args[0] == "--":
+        gh_args = gh_args[1:]
+    if getattr(args, "passthrough", None):
+        gh_args.extend(args.passthrough)
+    if not gh_args:
+        raise SystemExit(f"Usage: platform gh {identity} -- <gh args>")
+
+    if args.dry_run:
+        if not args.quiet:
+            print(
+                f"+ GH_TOKEN=<{secret_name}> GH_CONFIG_DIR=/tmp/gh-{identity} gh {shlex.join(gh_args)}",
+                file=sys.stderr,
+            )
+        return
+
+    token = _resolve_sparkswarm_secret_value(
+        args,
+        name=secret_name,
+        project="spark-swarm",
+        environment="production",
+    )
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
+    env["GH_CONFIG_DIR"] = str(Path("/tmp") / f"gh-{identity}")
+
+    if not args.quiet:
+        print(f"+ gh[{identity}] {shlex.join(gh_args)}", file=sys.stderr)
+    proc = subprocess.run(["gh", *gh_args], env=env)
+    if proc.returncode != 0:
+        raise SystemExit(proc.returncode)
+
+
+def cmd_agent_launch(args: argparse.Namespace) -> None:
+    agent = args.agent
+    secret_name = GH_IDENTITY_SECRETS.get(agent)
+    if not secret_name:
+        raise SystemExit(f"Unknown agent identity: {agent!r}")
+
+    command = list(getattr(args, "agent_args", []) or [])
+    if command and command[0] == "--":
+        command = command[1:]
+    if getattr(args, "passthrough", None):
+        command.extend(args.passthrough)
+    if not command:
+        if agent == "codex":
+            command = [
+                "codex",
+                "--sandbox",
+                "danger-full-access",
+                "--ask-for-approval",
+                "never",
+            ]
+        else:
+            command = ["claude"]
+
+    if args.dry_run:
+        if not args.quiet:
+            print(
+                f"+ GH_TOKEN=<{secret_name}> "
+                f"SPARK_SWARM_API_KEY=<{SPARK_SWARM_IDENTITY_SECRETS[agent]}> "
+                f"GH_CONFIG_DIR=/tmp/gh-{agent} {shlex.join(command)}",
+                file=sys.stderr,
+            )
+        return
+
+    token = _resolve_sparkswarm_secret_value(
+        args,
+        name=secret_name,
+        project="spark-swarm",
+        environment="production",
+    )
+    spark_swarm_token = _resolve_sparkswarm_secret_value(
+        args,
+        name=SPARK_SWARM_IDENTITY_SECRETS[agent],
+        project="spark-swarm",
+        environment="production",
+    )
+    env = os.environ.copy()
+    env["GH_TOKEN"] = token
+    env["GITHUB_TOKEN"] = token
+    env["GH_CONFIG_DIR"] = str(Path("/tmp") / f"gh-{agent}")
+    env["MILES_AUTOMATION_GH_IDENTITY"] = GH_IDENTITY_LOGINS.get(agent, agent)
+    env["SPARK_SWARM_API_KEY"] = spark_swarm_token
+    env["SPARK_SWARM_MCP_API_KEY"] = spark_swarm_token
+    env["SPARK_SWARM_API_URL"] = "https://sparkswarm.com/api/v1"
+    env["SPARK_SWARM_MCP_URL"] = "https://sparkswarm.com/mcp"
+    env["MILES_AUTOMATION_SPARK_SWARM_ACTOR"] = SPARK_SWARM_IDENTITY_ACTORS[agent]
+
+    if not args.quiet:
+        print(f"+ agent[{agent}] {shlex.join(command)}", file=sys.stderr)
+    proc = subprocess.run(command, env=env)
+    if proc.returncode != 0:
+        raise SystemExit(proc.returncode)
+
+
+def cmd_secrets_delete(args: argparse.Namespace) -> None:
+    if not args.yes:
+        raise SystemExit("Refusing to delete a secret without --yes")
+
+    base = secrets_api_base(args)
+    api_key = _require_env("SPARK_SWARM_API_KEY")
+
+    project = secrets_project_name(args.cfg, args.project)
+    env = args.environment
+    name = args.name
+
+    url = (
+        f"{base}/secrets/{urllib.parse.quote(name)}"
+        f"?project={urllib.parse.quote(project)}&environment={urllib.parse.quote(env)}"
+    )
+
+    if not args.quiet:
+        print(f"+ DELETE {url}", file=sys.stderr)
+
+    if args.dry_run:
+        return
+
+    try:
+        status = _http_status(method="DELETE", url=url, headers={"X-API-Key": api_key})
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise SystemExit("Secret not found (already deleted?)") from e
+        raise
+    if status not in (200, 204):
+        raise SystemExit(f"Unexpected status: {status}")
+
+
+def cmd_prod_secrets_apply(args: argparse.Namespace) -> None:
+    require_yes(args, "apply SparkSwarm-exported secrets to prod .env")
+    host = prod_host(args)
+
+    base = secrets_api_base(args)
+    project = secrets_project_name(args.cfg, args.project)
+    env = args.environment
+    export_url = f"{base}/secrets/export/dotenv?project={project}&environment={env}"
+
+    marker_start = f"# BEGIN SPARKSWARM {project} {env}"
+    marker_end = f"# END SPARKSWARM {project} {env}"
+
+    remote_env_path = str(Path(prod_dir(args)) / ".env")
+
+    remote = f"""
+set -euo pipefail
+ENV_FILE={shlex.quote(remote_env_path)}
+START={shlex.quote(marker_start)}
+END={shlex.quote(marker_end)}
+
+mkdir -p "$(dirname "$ENV_FILE")"
+touch "$ENV_FILE"
+
+# Load SPARK_SWARM_API_KEY from the existing dotenv without 'source' (dotenv is not bash).
+API_KEY="$(
+python3 - "$ENV_FILE" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+if not path.exists():
+    sys.exit(0)
+for raw in path.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    if k.strip() != "SPARK_SWARM_API_KEY":
+        continue
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('\"', \"'\"):
+        v = v[1:-1]
+    sys.stdout.write(v)
+    break
+PY
+)"
+if [ -z "$API_KEY" ]; then
+  echo "Missing SPARK_SWARM_API_KEY in $ENV_FILE" >&2
+  exit 1
+fi
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+curl -fsS {shlex.quote(export_url)} -H "X-API-Key: $API_KEY" > "$tmp"
+
+# Docker Compose treats '$' as interpolation in dotenv values; escape to '$$' so secrets are literal.
+python3 - "$tmp" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+out = []
+for raw in path.read_text().splitlines():
+    line = raw.rstrip("\\n")
+    if not line or line.lstrip().startswith("#") or "=" not in line:
+        out.append(line)
+        continue
+    k, v = line.split("=", 1)
+    vv = v
+    if "$" in vv:
+        stripped = vv.strip()
+        if not (len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ("'", '"')):
+            vv = vv.replace("$", "$$")
+    out.append(k + "=" + vv)
+path.write_text("\\n".join(out) + ("\\n" if out else ""))
+PY
+
+out="$(mktemp)"
+trap 'rm -f "$tmp" "$out"' EXIT
+
+awk -v start="$START" -v end="$END" '
+  $0 == start {{inblock=1; next}}
+  $0 == end {{inblock=0; next}}
+  !inblock {{print}}
+' "$ENV_FILE" > "$out"
+
+cat >> "$out" <<EOF
+$START
+$(cat "$tmp")
+$END
+EOF
+
+mv "$out" "$ENV_FILE"
+"""
+
+    sh(["ssh", host, remote], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def _http_json(
+    *,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    data: dict[str, Any] | None = None,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    body: bytes | None = None
+    if data is not None:
+        body = json.dumps(data).encode("utf-8")
+        headers = {**headers, "Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    parsed = json.loads(raw.decode("utf-8"))
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Expected JSON object from {url}")
+    return parsed
+
+
+def _http_json_allow_404(
+    *,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    data: dict[str, Any] | None = None,
+    timeout: float = 15.0,
+) -> tuple[int, dict[str, Any] | None]:
+    """
+    Like _http_json, but returns (status, parsed) and tolerates 404.
+    """
+    body: bytes | None = None
+    if data is not None:
+        body = json.dumps(data).encode("utf-8")
+        headers = {**headers, "Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+            status = int(resp.status)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return 404, None
+        raise
+    parsed = json.loads(raw.decode("utf-8")) if raw else {}
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Expected JSON object from {url}")
+    return status, parsed
+
+
+def _http_status(
+    *,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    timeout: float = 15.0,
+) -> int:
+    req = urllib.request.Request(url, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return int(resp.status)
+
+
+def _require_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise SystemExit(f"Missing required environment variable: {name}")
+    return value
+
+
+def _sparkswarm_api_base(args: argparse.Namespace) -> str:
+    base = secrets_api_base(args)
+    return base.rstrip("/")
+
+
+def _sparkswarm_api_key_from_prod_env(args: argparse.Namespace) -> str | None:
+    host = prod_host(args)
+    env_path = str(Path(prod_dir(args)) / ".env")
+    remote = f"""
+set -euo pipefail
+python3 - {shlex.quote(env_path)} <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+if not path.exists():
+    sys.exit(0)
+for raw in path.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    if k.strip() != "SPARK_SWARM_API_KEY":
+        continue
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+        v = v[1:-1]
+    sys.stdout.write(v)
+    break
+PY
+"""
+    out = sh_capture(["ssh", host, remote], cwd=None, dry_run=args.dry_run, quiet=True, check=False).strip()
+    return out or None
+
+
+def _sparkswarm_api_key(args: argparse.Namespace) -> str | None:
+    local = os.getenv("SPARK_SWARM_API_KEY", "").strip()
+    if local:
+        return local
+    return _sparkswarm_api_key_from_prod_env(args)
+
+
+def _sparkswarm_resolve_spark_id(*, base: str, api_key: str, slug: str) -> int | None:
+    url = f"{base}/sparks/{urllib.parse.quote(slug)}"
+    status, data = _http_json_allow_404(method="GET", url=url, headers={"X-API-Key": api_key})
+    if status == 404 or not data:
+        return None
+    spark_id = data.get("id")
+    return int(spark_id) if isinstance(spark_id, int) else None
+
+
+def _sparkswarm_log_event(
+    *,
+    base: str,
+    api_key: str,
+    event_type: str,
+    message: str,
+    spark_id: int | None,
+    metadata: dict[str, Any],
+    actor: str,
+) -> None:
+    _http_json(
+        method="POST",
+        url=f"{base}/events",
+        headers={"X-API-Key": api_key},
+        data={
+            "type": event_type,
+            "message": message,
+            "spark_id": spark_id,
+            "metadata": json.dumps(metadata, sort_keys=True),
+            "actor": actor,
+        },
+    )
+
+
+def _sparkswarm_put_spark_setting(*, base: str, api_key: str, slug: str, key: str, value: str) -> None:
+    _http_json(
+        method="PUT",
+        url=f"{base}/sparks/{urllib.parse.quote(slug)}/settings/{urllib.parse.quote(key)}",
+        headers={"X-API-Key": api_key},
+        data={"value": value},
+    )
+
+
+def _swarm_export_dotenv(*, api_key: str, project: str, environment: str, base: str) -> str:
+    url = f"{base}/secrets/export/dotenv?project={urllib.parse.quote(project)}&environment={urllib.parse.quote(environment)}"
+    req = urllib.request.Request(url, headers={"X-API-Key": api_key})
+    with urllib.request.urlopen(req, timeout=20.0) as resp:
+        return resp.read().decode("utf-8")
+
+
+def _dotenv_parse(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        out[key.strip()] = value.strip().strip('"')
+    return out
+
+
+def _cloudflare_zone_id(*, token: str, zone_name: str) -> str:
+    url = f"https://api.cloudflare.com/client/v4/zones?name={urllib.parse.quote(zone_name)}"
+    data = _http_json(method="GET", url=url, headers={"Authorization": f"Bearer {token}"})
+    if not data.get("success"):
+        raise SystemExit(f"Cloudflare zones lookup failed: {data}")
+    result = data.get("result")
+    if not isinstance(result, list) or not result:
+        raise SystemExit(f"Cloudflare zone not found for {zone_name!r}")
+    zone_id = result[0].get("id")
+    if not isinstance(zone_id, str) or not zone_id:
+        raise SystemExit("Cloudflare returned invalid zone id")
+    return zone_id
+
+
+def _cloudflare_upsert_record(
+    *,
+    token: str,
+    zone_id: str,
+    record_type: str,
+    name: str,
+    content: str,
+    proxied: bool,
+    priority: int | None = None,
+) -> None:
+    headers = {"Authorization": f"Bearer {token}"}
+    list_url = (
+        f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?"
+        f"type={urllib.parse.quote(record_type)}&name={urllib.parse.quote(name)}"
+    )
+    data = _http_json(method="GET", url=list_url, headers=headers)
+    if not data.get("success"):
+        raise SystemExit(f"Cloudflare dns_records list failed: {data}")
+    result = data.get("result")
+    record_id: str | None = None
+    if isinstance(result, list) and result:
+        # For MX records, match by content too (multiple MX records can exist)
+        if record_type == "MX":
+            for rec in result:
+                if rec.get("content") == content:
+                    rid = rec.get("id")
+                    if isinstance(rid, str) and rid:
+                        record_id = rid
+                    break
+        else:
+            rid = result[0].get("id")
+            if isinstance(rid, str) and rid:
+                record_id = rid
+
+    payload: dict[str, Any] = {"type": record_type, "name": name, "content": content, "proxied": proxied}
+    if record_type in ("A", "CNAME"):
+        payload["ttl"] = 300
+    if record_type in ("MX", "TXT"):
+        payload["ttl"] = 3600
+    if priority is not None:
+        payload["priority"] = priority
+    if record_id:
+        url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}"
+        out = _http_json(method="PUT", url=url, headers=headers, data=payload)
+    else:
+        url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"
+        out = _http_json(method="POST", url=url, headers=headers, data=payload)
+    if not out.get("success"):
+        raise SystemExit(f"Cloudflare dns_records upsert failed: {out}")
+
+
+def cmd_dns_apply(args: argparse.Namespace) -> None:
+    cfg = args.cfg
+    ws = args.workspace_root
+
+    proj = project_cfg(cfg, args.project)
+    dns_cfg = proj.get("dns")
+    if not isinstance(dns_cfg, dict):
+        raise SystemExit(f"No [projects.{args.project}.dns] configured in platform.toml")
+    if dns_cfg.get("provider") != "cloudflare":
+        raise SystemExit("Only Cloudflare DNS is supported right now")
+
+    droplet_ip = cfg_get(cfg, "prod.droplet_ip")
+    if not isinstance(droplet_ip, str) or not droplet_ip:
+        raise SystemExit("Missing prod.droplet_ip in platform.toml")
+
+    domains = proj.get("domains")
+    if not isinstance(domains, list) or not domains:
+        raise SystemExit(f"No domains configured for project {args.project!r}")
+
+    # Use apex domain as the Cloudflare zone name.
+    apex = next((d for d in domains if isinstance(d, str) and not d.startswith("www.")), None)
+    if not apex:
+        raise SystemExit(f"Could not infer apex domain from domains: {domains}")
+    www = f"www.{apex}"
+
+    token_secret = dns_cfg.get("cloudflare_token_secret")
+    if not isinstance(token_secret, str) or not token_secret:
+        raise SystemExit("Missing cloudflare_token_secret in platform.toml")
+
+    swarm_api_key = _require_env("SPARK_SWARM_API_KEY")
+    base = secrets_api_base(args)
+    swarm_project = secrets_project_name(cfg, args.project)
+    swarm_env = args.environment
+
+    token_project = dns_cfg.get("cloudflare_token_project")
+    token_env = dns_cfg.get("cloudflare_token_environment")
+    if isinstance(token_project, str) and token_project:
+        swarm_project = token_project
+    if isinstance(token_env, str) and token_env:
+        swarm_env = token_env
+
+    dotenv_text = _swarm_export_dotenv(api_key=swarm_api_key, project=swarm_project, environment=swarm_env, base=base)
+    secrets = _dotenv_parse(dotenv_text)
+    cf_token = secrets.get(token_secret, "").strip()
+    if not cf_token:
+        raise SystemExit(
+            f"Cloudflare token not found in SparkSwarm export. Expected {token_secret!r} in "
+            f"project={swarm_project!r} env={swarm_env!r}."
+        )
+
+    proxied = bool(dns_cfg.get("cloudflare_proxied", False))
+
+    if not args.quiet:
+        print(f"+ cloudflare: zone={apex} set A {apex} -> {droplet_ip}", file=sys.stderr)
+        print(f"+ cloudflare: zone={apex} set CNAME {www} -> {apex}", file=sys.stderr)
+
+    if args.dry_run:
+        return
+
+    zone_id = dns_cfg.get("cloudflare_zone_id")
+    if isinstance(zone_id, str) and zone_id:
+        zone_id = zone_id.strip()
+    else:
+        zone_id = _cloudflare_zone_id(token=cf_token, zone_name=apex)
+    _cloudflare_upsert_record(
+        token=cf_token,
+        zone_id=zone_id,
+        record_type="A",
+        name=apex,
+        content=droplet_ip,
+        proxied=proxied,
+    )
+    _cloudflare_upsert_record(
+        token=cf_token,
+        zone_id=zone_id,
+        record_type="CNAME",
+        name=www,
+        content=apex,
+        proxied=proxied,
+    )
+
+
+def cmd_dns_email_apply(args: argparse.Namespace) -> None:
+    """Apply email DNS records (MX, SPF, DKIM) for a project domain via Cloudflare."""
+    cfg = args.cfg
+
+    proj = project_cfg(cfg, args.project)
+    dns_cfg = proj.get("dns")
+    if not isinstance(dns_cfg, dict):
+        raise SystemExit(f"No [projects.{args.project}.dns] configured in platform.toml")
+    if dns_cfg.get("provider") != "cloudflare":
+        raise SystemExit("Only Cloudflare DNS is supported right now")
+
+    domains = proj.get("domains")
+    if not isinstance(domains, list) or not domains:
+        raise SystemExit(f"No domains configured for project {args.project!r}")
+
+    apex = next((d for d in domains if isinstance(d, str) and not d.startswith("www.")), None)
+    if not apex:
+        raise SystemExit(f"Could not infer apex domain from domains: {domains}")
+
+    token_secret = dns_cfg.get("cloudflare_token_secret")
+    if not isinstance(token_secret, str) or not token_secret:
+        raise SystemExit("Missing cloudflare_token_secret in platform.toml")
+
+    swarm_api_key = _require_env("SPARK_SWARM_API_KEY")
+    base = secrets_api_base(args)
+    swarm_project = secrets_project_name(cfg, args.project)
+    swarm_env = args.environment
+
+    token_project = dns_cfg.get("cloudflare_token_project")
+    token_env = dns_cfg.get("cloudflare_token_environment")
+    if isinstance(token_project, str) and token_project:
+        swarm_project = token_project
+    if isinstance(token_env, str) and token_env:
+        swarm_env = token_env
+
+    dotenv_text = _swarm_export_dotenv(api_key=swarm_api_key, project=swarm_project, environment=swarm_env, base=base)
+    secrets = _dotenv_parse(dotenv_text)
+    cf_token = secrets.get(token_secret, "").strip()
+    if not cf_token:
+        raise SystemExit(
+            f"Cloudflare token not found in SparkSwarm export. Expected {token_secret!r} in "
+            f"project={swarm_project!r} env={swarm_env!r}."
+        )
+
+    # Fetch email DNS records from Spark Swarm
+    email_api_base = base.rsplit("/secrets", 1)[0] if "/secrets" in base else base.rsplit("/api", 1)[0] + "/api/v1"
+    email_dns_url = f"{email_api_base}/email/domains/{urllib.parse.quote(apex)}/dns"
+    try:
+        dns_data = _http_json(method="GET", url=email_dns_url, headers={"X-API-Key": swarm_api_key})
+    except Exception as e:
+        raise SystemExit(f"Failed to fetch email DNS records for {apex}: {e}") from e
+
+    mx_records = dns_data.get("mx_records", [])
+    spf = dns_data.get("spf")
+    dkim = dns_data.get("dkim")
+
+    if not mx_records and not spf and not dkim:
+        raise SystemExit(f"No email DNS records returned for {apex}. Is the domain added in Spark Swarm?")
+
+    if not args.quiet:
+        for mx in mx_records:
+            print(f"+ cloudflare: zone={apex} set MX {apex} -> {mx['value']} (priority {mx.get('priority', 10)})", file=sys.stderr)
+        if spf:
+            print(f"+ cloudflare: zone={apex} set TXT {spf['name']} (SPF)", file=sys.stderr)
+        if dkim:
+            print(f"+ cloudflare: zone={apex} set TXT {dkim['name']} (DKIM)", file=sys.stderr)
+
+    if args.dry_run:
+        return
+
+    zone_id = dns_cfg.get("cloudflare_zone_id")
+    if isinstance(zone_id, str) and zone_id:
+        zone_id = zone_id.strip()
+    else:
+        zone_id = _cloudflare_zone_id(token=cf_token, zone_name=apex)
+
+    for mx in mx_records:
+        _cloudflare_upsert_record(
+            token=cf_token,
+            zone_id=zone_id,
+            record_type="MX",
+            name=apex,
+            content=mx["value"],
+            proxied=False,
+            priority=mx.get("priority", 10),
+        )
+    if spf:
+        _cloudflare_upsert_record(
+            token=cf_token,
+            zone_id=zone_id,
+            record_type="TXT",
+            name=spf.get("name", apex),
+            content=spf["value"],
+            proxied=False,
+        )
+    if dkim:
+        _cloudflare_upsert_record(
+            token=cf_token,
+            zone_id=zone_id,
+            record_type="TXT",
+            name=dkim["name"],
+            content=dkim["value"],
+            proxied=False,
+        )
+
+
+def cmd_analytics_umami_ensure(args: argparse.Namespace) -> None:
+    """
+    Ensure an Umami website exists for a project domain, and optionally store the mapping in Spark Swarm.
+
+    Production impact: creates a new row in Umami's `website` table if missing (requires `--yes`).
+    """
+    cfg = args.cfg
+    proj = project_cfg(cfg, args.project)
+
+    domains = proj.get("domains")
+    if not isinstance(domains, list) or not domains:
+        raise SystemExit(f"No domains configured for project {args.project!r}")
+
+    domain = args.domain
+    if not domain:
+        candidates = [str(d) for d in domains if isinstance(d, str) and d]
+        apex = next((d for d in candidates if not d.startswith("www.")), None)
+        domain = apex or candidates[0]
+
+    name = args.name or (proj.get("display_name") if isinstance(proj.get("display_name"), str) else None) or args.project
+    spark_slug = args.spark or args.project
+
+    host = prod_host(args)
+    compose_file = prod_compose_file(args)
+    infra_dir = prod_dir(args)
+
+    def sql_lit(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    def psql_scalar(sql: str) -> str:
+        remote = f"""
+set -euo pipefail
+cd {shlex.quote(infra_dir)}
+docker compose -f {shlex.quote(compose_file)} exec -T postgres psql -U postgres -d umami_db -At -v ON_ERROR_STOP=1 \\
+  -c {shlex.quote(sql)}
+"""
+        return sh_capture(["ssh", host, remote], cwd=None, dry_run=args.dry_run, quiet=args.quiet).strip()
+
+    existing = psql_scalar(f"select website_id from website where domain = {sql_lit(domain)} limit 1;")
+    website_id = existing
+
+    if not website_id:
+        require_yes(args, f"create Umami website for {domain}")
+        sql = """
+with admin as (
+  select user_id from "user" where username = 'admin' limit 1
+), ins as (
+  insert into website (website_id, name, domain, user_id, created_by)
+  select gen_random_uuid(), {name}, {domain}, (select user_id from admin), (select user_id from admin)
+  returning website_id
+)
+select website_id from ins;
+""".strip().format(name=sql_lit(name), domain=sql_lit(domain))
+        website_id = psql_scalar(sql)
+
+    if not website_id:
+        raise SystemExit("Failed to resolve umami website_id (no existing row, and insert did not return an id)")
+
+    print(website_id)
+
+    if args.no_store:
+        return
+
+    api_key = _sparkswarm_api_key(args)
+    if not api_key:
+        _eprint("warn: cannot store on spark: missing SPARK_SWARM_API_KEY (set env var or ensure it exists on the droplet)")
+        return
+
+    base = _sparkswarm_api_base(args)
+    spark_id = _sparkswarm_resolve_spark_id(base=base, api_key=api_key, slug=spark_slug)
+    if not spark_id:
+        _eprint(f"warn: cannot store on spark: unknown spark slug {spark_slug!r}")
+        return
+
+    _sparkswarm_put_spark_setting(base=base, api_key=api_key, slug=spark_slug, key="umami_domain", value=domain)
+    _sparkswarm_put_spark_setting(base=base, api_key=api_key, slug=spark_slug, key="umami_website_id", value=website_id)
+    _sparkswarm_log_event(
+        base=base,
+        api_key=api_key,
+        event_type="note",
+        message=f"umami configured: {domain} -> {website_id}",
+        spark_id=spark_id,
+        metadata={"umami_domain": domain, "umami_website_id": website_id},
+        actor="platform",
+    )
+
+
+def _require_sparkswarm_key(args: argparse.Namespace) -> str:
+    api_key = _sparkswarm_api_key(args)
+    if api_key:
+        return api_key
+    raise SystemExit("Missing SPARK_SWARM_API_KEY (env or prod .env)")
+
+
+def cmd_spark_run_start(args: argparse.Namespace) -> None:
+    base = _sparkswarm_api_base(args)
+    api_key = _require_sparkswarm_key(args)
+    payload: dict[str, Any] = {
+        "spark_slug": args.spark,
+        "trigger": args.trigger,
+        "actor": "platform-cli",
+        "max_retry_attempts": args.max_retries,
+    }
+    if args.step:
+        payload["step_names"] = list(args.step)
+
+    if args.dry_run:
+        if not args.quiet:
+            print(
+                f"+ POST {base}/runs spark={args.spark!r} trigger={args.trigger!r}",
+                file=sys.stderr,
+            )
+        return
+
+    data = _http_json(
+        method="POST",
+        url=f"{base}/runs",
+        headers={"X-API-Key": api_key},
+        data=payload,
+    )
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    print(
+        f"run_id={data.get('id')} status={data.get('status')} spark={data.get('spark_slug')} "
+        f"steps={len(data.get('steps', []))}"
+    )
+
+
+def cmd_spark_run_status(args: argparse.Namespace) -> None:
+    base = _sparkswarm_api_base(args)
+    api_key = _require_sparkswarm_key(args)
+
+    if args.dry_run:
+        if not args.quiet:
+            print(f"+ GET {base}/runs/{args.run_id}", file=sys.stderr)
+        return
+
+    data = _http_json(
+        method="GET",
+        url=f"{base}/runs/{args.run_id}",
+        headers={"X-API-Key": api_key},
+    )
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    print(
+        f"run_id={data.get('id')} status={data.get('status')} current_step={data.get('current_step_name') or '-'} "
+        f"spark={data.get('spark_slug')}"
+    )
+    for step in data.get("steps", []):
+        print(
+            f"  - {step.get('step_order')}: {step.get('step_name')} "
+            f"{step.get('state')} attempts={step.get('attempt_count')}"
+        )
+
+
+def cmd_spark_run_resume(args: argparse.Namespace) -> None:
+    base = _sparkswarm_api_base(args)
+    api_key = _require_sparkswarm_key(args)
+    url = f"{base}/runs/{args.run_id}/resume?actor=platform-cli"
+
+    if args.dry_run:
+        if not args.quiet:
+            print(f"+ POST {url}", file=sys.stderr)
+        return
+
+    data = _http_json(
+        method="POST",
+        url=url,
+        headers={"X-API-Key": api_key},
+        data={},
+    )
+    if args.json:
+        print(json.dumps(data, indent=2, sort_keys=True))
+        return
+    print(
+        f"run_id={data.get('id')} status={data.get('status')} "
+        f"current_step={data.get('current_step_name') or '-'}"
+    )
+
+
+def cmd_prod_deploy(args: argparse.Namespace) -> None:
+    require_yes(args, "deploy to prod")
+
+    host = prod_host(args)
+    dir_ = prod_dir(args)
+    service = resolve_service_from_target(args.cfg, args.target)
+
+    if args.pull_only:
+        remote = f"cd {shlex.quote(dir_)} && docker compose pull {shlex.quote(service)}"
+    else:
+        remote = (
+            f"cd {shlex.quote(dir_)} && "
+            f"docker compose pull {shlex.quote(service)} && "
+            f"docker compose up -d {shlex.quote(service)}"
+        )
+
+    sh(["ssh", host, remote], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def cmd_prod_deploy_tarball(args: argparse.Namespace) -> None:
+    """Emergency deploy path: build locally, save tarball, SCP to droplet, docker load."""
+    require_yes(args, "tarball deploy to prod")
+
+    cfg = args.cfg
+    ws = args.workspace_root
+    host = prod_host(args)
+    dir_ = prod_dir(args)
+    compose = prod_compose_file(args)
+
+    service = resolve_service_from_target(cfg, args.target)
+
+    project_key: str | None = None
+    projects = cfg.get("projects")
+    if isinstance(projects, dict) and args.target in projects:
+        project_key = args.target
+
+    # Resolve image name and build context.
+    if args.image:
+        image_name = args.image
+    elif project_key:
+        proj = project_cfg(cfg, project_key)
+        ghcr = proj.get("ghcr_image")
+        if not isinstance(ghcr, str) or not ghcr:
+            raise SystemExit(f"Project {project_key!r} has no ghcr_image in platform.toml (use --image)")
+        image_name = ghcr
+    else:
+        raise SystemExit("Cannot resolve image name. Provide --image or use a project target with ghcr_image configured.")
+
+    if args.context:
+        build_context = Path(args.context).resolve()
+    elif project_key:
+        proj = project_cfg(cfg, project_key)
+        build_context = resolve_repo_dir(ws, proj)
+    else:
+        raise SystemExit("Cannot resolve build context. Provide --context or use a project target with repo_dir configured.")
+
+    if not build_context.is_dir():
+        raise SystemExit(f"Build context not found: {build_context}")
+
+    tag = args.tag
+    full_image = f"{image_name}:{tag}"
+    tarball = Path(args.tarball) if args.tarball else Path(f"/tmp/{service}-{tag}.tar")
+
+    if not args.quiet:
+        _eprint(f"==> Phase 1: Build {full_image} (platform=linux/amd64)")
+    sh(
+        ["docker", "build", "--platform", "linux/amd64", "-t", full_image, "."],
+        cwd=build_context,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
+
+    if not args.quiet:
+        _eprint(f"==> Phase 2: Save {full_image} → {tarball}")
+    sh(
+        ["docker", "save", "-o", str(tarball), full_image],
+        cwd=None,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
+
+    if not args.quiet:
+        if not args.dry_run:
+            size_mb = tarball.stat().st_size / (1024 * 1024)
+            _eprint(f"    tarball size: {size_mb:.1f} MB")
+        _eprint(f"==> Phase 3: SCP {tarball} → {host}:/tmp/")
+    sh(
+        ["scp", str(tarball), f"{host}:/tmp/{tarball.name}"],
+        cwd=None,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
+
+    if not args.quiet:
+        _eprint(f"==> Phase 4: docker load on {host}")
+    sh(
+        ["ssh", host, f"docker load -i /tmp/{shlex.quote(tarball.name)} && rm -f /tmp/{shlex.quote(tarball.name)}"],
+        cwd=None,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
+
+    # Clean up local tarball unless --keep-tarball.
+    if not args.keep_tarball and not args.dry_run and tarball.exists():
+        tarball.unlink()
+        if not args.quiet:
+            _eprint(f"    cleaned up local tarball: {tarball}")
+
+    if args.load_only:
+        if not args.quiet:
+            _eprint(f"ok: image loaded on {host} (--load-only, skipping tag update + restart)")
+        return
+
+    # Phase 5: Update .env tag and restart.
+    if project_key:
+        image_tag_key = _project_image_tag_env(project_key)
+        if not args.quiet:
+            _eprint(f"==> Phase 5: Set {image_tag_key}={tag} and restart {service}")
+        remote_set_tag = f"""
+set -euo pipefail
+cd {shlex.quote(dir_)}
+export KEY={shlex.quote(image_tag_key)}
+export VAL={shlex.quote(tag)}
+python3 - <<'PY'
+import os, pathlib, re
+path = pathlib.Path(".env")
+key = os.environ["KEY"]
+val = os.environ["VAL"]
+lines = path.read_text().splitlines(True) if path.exists() else []
+out = []
+found = False
+pat = re.compile("^" + re.escape(key) + "=")
+for line in lines:
+    if pat.match(line):
+        out.append(key + "=" + val + "\\n")
+        found = True
+    else:
+        out.append(line)
+if not found:
+    out.append(key + "=" + val + "\\n")
+path.write_text("".join(out))
+PY
+"""
+        sh(["ssh", host, remote_set_tag], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+    else:
+        if not args.quiet:
+            _eprint(f"==> Phase 5: Restart {service} (no image tag env — raw service target)")
+
+    sh(
+        ["ssh", host, f"cd {shlex.quote(dir_)} && docker compose -f {shlex.quote(compose)} up -d {shlex.quote(service)}"],
+        cwd=None,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
+
+    # Optional health check.
+    health_domain = args.health_domain
+    if not health_domain and project_key:
+        proj = project_cfg(cfg, project_key)
+        domains = proj.get("domains")
+        if isinstance(domains, list) and domains:
+            health_domain = str(domains[0])
+    if health_domain and not args.dry_run:
+        health_path = args.health_path
+        if not args.quiet:
+            _eprint(f"==> Phase 6: Health check {health_domain}{health_path}")
+        health_remote = (
+            "set -euo pipefail; "
+            f"for i in $(seq 1 20); do "
+            f"curl -fsS --resolve {health_domain}:443:127.0.0.1 https://{health_domain}{health_path} >/dev/null && exit 0; "
+            "sleep 2; "
+            "done; exit 1"
+        )
+        health_rc = sh(["ssh", host, health_remote], cwd=None, dry_run=args.dry_run, quiet=args.quiet, check=False)
+        if health_rc == 0:
+            if not args.quiet:
+                _eprint(f"ok: health check passed for {service} ({health_domain}{health_path})")
+        else:
+            raise SystemExit(f"Health check failed for {service} ({health_domain}{health_path}). Manual intervention required.")
+    elif not args.quiet:
+        _eprint(f"ok: tarball deploy complete for {service} (no health check — provide --health-domain or configure domains)")
+
+
+def cmd_prod_caddy_restart(args: argparse.Namespace) -> None:
+    require_yes(args, "restart caddy on prod")
+    if not args.really:
+        raise SystemExit("Refusing to restart caddy without --really (extra confirmation)")
+
+    host = prod_host(args)
+    compose = prod_compose_file(args)
+    remote = f"docker compose -f {shlex.quote(compose)} restart caddy"
+    sh(["ssh", host, remote], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+
+def _project_image_tag_env(project_key: str) -> str:
+    return project_key.upper().replace("-", "_") + "_IMAGE_TAG"
+
+
+def _dotenv_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and ((value[0] == value[-1]) and value[0] in {"'", '"'}):
+        return value[1:-1]
+    return value
+
+
+def cmd_prod_drift(args: argparse.Namespace) -> None:
+    host = prod_host(args)
+    remote_dir = prod_dir(args).rstrip("/")
+    remote_compose = prod_compose_file(args)
+
+    local_compose = Path(infra_compose_file(args))
+    local_caddy = local_compose.parent / "Caddyfile"
+
+    remote_caddy = f"{remote_dir}/Caddyfile"
+
+    issues: list[str] = []
+
+    # File drift (safe: hashes only)
+    local_compose_hash = sha256_file(local_compose)
+    local_caddy_hash = sha256_file(local_caddy)
+
+    remote_compose_out = sh_capture(["ssh", host, f"sha256sum {shlex.quote(remote_compose)}"], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+    remote_caddy_out = sh_capture(["ssh", host, f"sha256sum {shlex.quote(remote_caddy)}"], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+    remote_compose_hash = (remote_compose_out.strip().split() or [""])[0]
+    remote_caddy_hash = (remote_caddy_out.strip().split() or [""])[0]
+
+    if remote_compose_hash and remote_compose_hash != local_compose_hash:
+        issues.append("docker-compose.yml differs (local vs prod)")
+    if remote_caddy_hash and remote_caddy_hash != local_caddy_hash:
+        issues.append("Caddyfile differs (local vs prod)")
+
+    # Image drift (safe: reads only *_IMAGE_TAG from .env)
+    tags_out = sh_capture(
+        [
+            "ssh",
+            host,
+            f"cd {shlex.quote(remote_dir)} && (grep -E '^[A-Z0-9_]+_IMAGE_TAG=' .env 2>/dev/null || true)",
+        ],
+        cwd=None,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
+    remote_tags: dict[str, str] = {}
+    for line in tags_out.splitlines():
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        remote_tags[k.strip()] = _dotenv_value(v)
+
+    running_images: dict[str, str] = {}
+    # Prefer docker compose ps (service-aware); fall back to docker ps.
+    compose_ps_out = sh_capture(
+        [
+            "ssh",
+            host,
+            f"cd {shlex.quote(remote_dir)} && docker compose -f {shlex.quote(remote_compose)} ps --format json",
+        ],
+        cwd=None,
+        dry_run=args.dry_run,
+        quiet=True if args.quiet else False,
+        check=False,
+    )
+    try:
+        ps_rows = json.loads(compose_ps_out) if compose_ps_out.strip() else []
+        if isinstance(ps_rows, list):
+            for row in ps_rows:
+                if not isinstance(row, dict):
+                    continue
+                service = row.get("Service")
+                image = row.get("Image")
+                if isinstance(service, str) and isinstance(image, str) and service and image:
+                    running_images[service] = image
+    except Exception:
+        running_images = {}
+
+    if not running_images:
+        docker_ps_out = sh_capture(
+            ["ssh", host, "docker ps --format '{{.Names}}\\t{{.Image}}'"],
+            cwd=None,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+        )
+        for line in docker_ps_out.splitlines():
+            if "\t" not in line:
+                continue
+            name, image = line.split("\t", 1)
+            # Best-effort mapping: platform-infra-<service>-1
+            if name.startswith("platform-infra-") and name.endswith("-1"):
+                service = name[len("platform-infra-") : -len("-1")]
+                running_images[service] = image.strip()
+
+    projects = args.cfg.get("projects")
+    if isinstance(projects, dict):
+        for key in sorted(projects.keys()):
+            proj = project_cfg(args.cfg, key)
+            service = proj.get("infra_service")
+            image = proj.get("ghcr_image")
+            if not (isinstance(service, str) and service and isinstance(image, str) and image):
+                continue
+            tag_key = _project_image_tag_env(key)
+            tag = remote_tags.get(tag_key, "") or "latest"
+            desired = f"{image}:{tag}"
+            actual = running_images.get(service)
+            if actual is None:
+                issues.append(f"service not running: {service}")
+                continue
+            if actual != desired:
+                issues.append(f"image drift: {service} wants {desired} but running {actual}")
+
+    if issues:
+        for issue in issues:
+            print(f"drift: {issue}")
+        if not getattr(args, "allow_drift", False):
+            raise SystemExit(1)
+        return
+
+    print("ok: no drift detected")
+
+
+def load_deploy_pack(workspace_root: Path, proj: dict[str, Any]) -> dict[str, Any] | None:
+    repo_dir = proj.get("repo_dir")
+    if not isinstance(repo_dir, str) or not repo_dir:
+        return None
+    path = (workspace_root / repo_dir / "deploy/pack.toml").resolve()
+    if not path.exists():
+        return None
+    data = tomllib.loads(path.read_text())
+    if not isinstance(data, dict):
+        return None
+    return data  # type: ignore[return-value]
+
+
+def deploy_pack_migration(pack: dict[str, Any] | None) -> tuple[str | None, str] | None:
+    if not isinstance(pack, dict):
+        return None
+    db = pack.get("database")
+    if not isinstance(db, dict):
+        return None
+    mig = db.get("migrations")
+    if not isinstance(mig, dict):
+        return None
+    if mig.get("type") != "command":
+        return None
+    run = mig.get("run")
+    if not isinstance(run, str) or not run.strip():
+        return None
+    workdir = mig.get("workdir")
+    if isinstance(workdir, str) and workdir.strip():
+        return (workdir.strip(), run.strip())
+    return (None, run.strip())
+
+
+def cmd_prod_rollout(args: argparse.Namespace) -> None:
+    if not args.dry_run:
+        require_yes(args, "rollout to prod")
+
+    ws = args.workspace_root
+    cfg = args.cfg
+    host = prod_host(args)
+    dir_ = prod_dir(args)
+    compose = prod_compose_file(args)
+
+    service = resolve_service_from_target(cfg, args.target)
+
+    project_key: str | None = None
+    projects = cfg.get("projects")
+    if isinstance(projects, dict) and args.target in projects:
+        project_key = args.target
+
+    base = _sparkswarm_api_base(args)
+    api_key = _sparkswarm_api_key(args) if not args.dry_run else None
+    spark_id = None
+    actor = "platform-cli"
+    if api_key and project_key:
+        spark_id = _sparkswarm_resolve_spark_id(base=base, api_key=api_key, slug=project_key)
+
+    # Health check domain: prefer project config (first domain), else require explicit.
+    health_domain = args.health_domain
+    if not health_domain and project_key:
+        proj = project_cfg(cfg, project_key)
+        domains = proj.get("domains")
+        if isinstance(domains, list) and domains:
+            health_domain = str(domains[0])
+    if not health_domain:
+        raise SystemExit("Missing health domain. Provide --health-domain or configure domains in platform.toml.")
+
+    health_path = args.health_path
+    if not health_path.startswith("/"):
+        raise SystemExit("--health-path must start with '/'")
+
+    previous_tag = ""
+    image_tag_key = ""
+    if project_key:
+        image_tag_key = _project_image_tag_env(project_key)
+        prev_out = sh_capture(
+            [
+                "ssh",
+                host,
+                f"cd {shlex.quote(dir_)} && (grep -E '^{shlex.quote(image_tag_key)}=' .env 2>/dev/null || true)",
+            ],
+            cwd=None,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+        ).strip()
+        if "=" in prev_out:
+            previous_tag = _dotenv_value(prev_out.split("=", 1)[1])
+
+    start_ts = time.time()
+    rollout_metadata_base: dict[str, Any] = {
+        "target": args.target,
+        "project": project_key,
+        "service": service,
+        "tag": args.tag,
+        "previous_tag": previous_tag or None,
+        "health_domain": health_domain,
+        "health_path": health_path,
+        "apply_secrets": bool(args.apply_secrets and project_key),
+        "secrets_env": args.secrets_env if (args.apply_secrets and project_key) else None,
+        "migrations": None,
+    }
+
+    if api_key:
+        try:
+            _sparkswarm_log_event(
+                base=base,
+                api_key=api_key,
+                event_type="deploy",
+                message=f"prod rollout started: {service} -> {args.tag}",
+                spark_id=spark_id,
+                metadata={**rollout_metadata_base, "status": "started"},
+                actor=actor,
+            )
+        except Exception:
+            # Don't fail the deploy if logging fails.
+            pass
+
+    try:
+        if args.apply_secrets and project_key:
+            # Applies a secrets block, not tags.
+            secrets_args = argparse.Namespace(
+                **{
+                    **vars(args),
+                    "project": project_key,
+                    "environment": args.secrets_env,
+                    "yes": True,
+                }
+            )
+            cmd_prod_secrets_apply(secrets_args)
+
+        if project_key:
+            # Update remote .env with the new tag (hash of file is used elsewhere; don't echo secrets).
+            if not image_tag_key:
+                image_tag_key = _project_image_tag_env(project_key)
+            remote_set_tag = f"""
+set -euo pipefail
+cd {shlex.quote(dir_)}
+export KEY={shlex.quote(image_tag_key)}
+export VAL={shlex.quote(args.tag)}
+python3 - <<'PY'
+import os, pathlib, re
+path = pathlib.Path(".env")
+key = os.environ["KEY"]
+val = os.environ["VAL"]
+lines = path.read_text().splitlines(True) if path.exists() else []
+out = []
+found = False
+pat = re.compile("^" + re.escape(key) + "=")
+for line in lines:
+    if pat.match(line):
+        out.append(key + "=" + val + "\\n")
+        found = True
+    else:
+        out.append(line)
+if not found:
+    out.append(key + "=" + val + "\\n")
+path.write_text("".join(out))
+PY
+"""
+            sh(["ssh", host, remote_set_tag], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+        # Pull, migrate (optional), start, health check.
+        sh(
+            ["ssh", host, f"cd {shlex.quote(dir_)} && docker compose -f {shlex.quote(compose)} pull {shlex.quote(service)}"],
+            cwd=None,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+        )
+
+        migrate = None
+        if project_key and not args.no_migrate:
+            proj = project_cfg(cfg, project_key)
+            pack = load_deploy_pack(ws, proj)
+            migrate = deploy_pack_migration(pack)
+        if migrate:
+            mig_workdir, mig_run = migrate
+            rollout_metadata_base["migrations"] = {"service": service, "workdir": mig_workdir, "run": mig_run}
+            if mig_workdir:
+                mig_cmd = f"cd {shlex.quote(mig_workdir)} && {mig_run}"
+            else:
+                mig_cmd = mig_run
+            sh(
+                [
+                    "ssh",
+                    host,
+                    f"cd {shlex.quote(dir_)} && docker compose -f {shlex.quote(compose)} run --rm --entrypoint sh {shlex.quote(service)} -lc {shlex.quote(mig_cmd)}",
+                ],
+                cwd=None,
+                dry_run=args.dry_run,
+                quiet=args.quiet,
+            )
+
+        sh(
+            ["ssh", host, f"cd {shlex.quote(dir_)} && docker compose -f {shlex.quote(compose)} up -d {shlex.quote(service)}"],
+            cwd=None,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+        )
+
+        if args.dry_run:
+            if not args.quiet:
+                print("dry-run: skipped health check / rollback")
+            return
+
+        # Health check via Caddy on localhost:443, pinning the vhost with --resolve.
+        # Probe HTTPS (not HTTP): bare-domain Caddy sites auto-redirect HTTP->HTTPS
+        # with a 308, which `curl -f` treats as success — so an HTTP probe passes
+        # even when the backend is down, defeating the rollback. HTTPS actually
+        # proxies to the app, so a dead backend yields 502 and fails the check.
+        health_remote = (
+            "set -euo pipefail; "
+            f"for i in $(seq 1 {int(args.health_retries)}); do "
+            f"curl -fsS --resolve {health_domain}:443:127.0.0.1 https://{health_domain}{health_path} >/dev/null && exit 0; "
+            f"sleep {float(args.health_delay_seconds)}; "
+            "done; exit 1"
+        )
+        health_rc = sh(
+            ["ssh", host, health_remote],
+            cwd=None,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+            check=False,
+        )
+        duration = round(time.time() - start_ts, 3)
+        if health_rc == 0:
+            if not args.quiet:
+                print(f"ok: health check passed for {service} ({health_domain}{health_path})")
+            if api_key:
+                try:
+                    _sparkswarm_log_event(
+                        base=base,
+                        api_key=api_key,
+                        event_type="deploy",
+                        message=f"prod rollout succeeded: {service} -> {args.tag}",
+                        spark_id=spark_id,
+                        metadata={**rollout_metadata_base, "status": "succeeded", "duration_seconds": duration},
+                        actor=actor,
+                    )
+                except Exception:
+                    pass
+            return
+
+        if args.no_rollback or not project_key or not previous_tag:
+            if api_key:
+                try:
+                    _sparkswarm_log_event(
+                        base=base,
+                        api_key=api_key,
+                        event_type="deploy",
+                        message=f"prod rollout failed: {service} -> {args.tag} (health check failed)",
+                        spark_id=spark_id,
+                        metadata={**rollout_metadata_base, "status": "failed", "duration_seconds": duration},
+                        actor=actor,
+                    )
+                except Exception:
+                    pass
+            raise SystemExit(f"Health check failed for {service} (no rollback performed).")
+
+        if not args.quiet:
+            print(f"warn: health check failed; rolling back {service} to {previous_tag}", file=sys.stderr)
+
+        remote_rollback_tag = f"""
+set -euo pipefail
+cd {shlex.quote(dir_)}
+export KEY={shlex.quote(image_tag_key)}
+export VAL={shlex.quote(previous_tag)}
+python3 - <<'PY'
+import os, pathlib, re
+path = pathlib.Path(".env")
+key = os.environ["KEY"]
+val = os.environ["VAL"]
+lines = path.read_text().splitlines(True) if path.exists() else []
+out = []
+pat = re.compile("^" + re.escape(key) + "=")
+replaced = False
+for line in lines:
+    if pat.match(line):
+        out.append(key + "=" + val + "\\n")
+        replaced = True
+    else:
+        out.append(line)
+if not replaced:
+    out.append(key + "=" + val + "\\n")
+path.write_text("".join(out))
+PY
+"""
+        sh(["ssh", host, remote_rollback_tag], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+        sh(
+            [
+                "ssh",
+                host,
+                f"cd {shlex.quote(dir_)} && docker compose -f {shlex.quote(compose)} pull {shlex.quote(service)} && docker compose -f {shlex.quote(compose)} up -d {shlex.quote(service)}",
+            ],
+            cwd=None,
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+        )
+        health_rc2 = sh(["ssh", host, health_remote], cwd=None, dry_run=args.dry_run, quiet=args.quiet, check=False)
+        duration2 = round(time.time() - start_ts, 3)
+        if health_rc2 != 0:
+            if api_key:
+                try:
+                    _sparkswarm_log_event(
+                        base=base,
+                        api_key=api_key,
+                        event_type="deploy",
+                        message=f"prod rollout failed: rollback unhealthy for {service} (was {args.tag}, tried {previous_tag})",
+                        spark_id=spark_id,
+                        metadata={**rollout_metadata_base, "status": "rollback_failed", "duration_seconds": duration2},
+                        actor=actor,
+                    )
+                except Exception:
+                    pass
+            raise SystemExit(f"Rollback attempted but health check still failing for {service}.")
+        if not args.quiet:
+            print(f"ok: rollback healthy for {service} ({health_domain}{health_path})")
+        if api_key:
+            try:
+                _sparkswarm_log_event(
+                    base=base,
+                    api_key=api_key,
+                    event_type="deploy",
+                    message=f"prod rollout rolled back: {service} stayed on {previous_tag} (health failed on {args.tag})",
+                    spark_id=spark_id,
+                    metadata={**rollout_metadata_base, "status": "rolled_back", "duration_seconds": duration2},
+                    actor=actor,
+                )
+            except Exception:
+                pass
+
+    except SystemExit as e:
+        duration = round(time.time() - start_ts, 3)
+        if api_key:
+            try:
+                _sparkswarm_log_event(
+                    base=base,
+                    api_key=api_key,
+                    event_type="deploy",
+                    message=f"prod rollout error: {service} -> {args.tag} ({e})",
+                    spark_id=spark_id,
+                    metadata={**rollout_metadata_base, "status": "error", "duration_seconds": duration},
+                    actor=actor,
+                )
+            except Exception:
+                pass
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Canvas commands
+# ---------------------------------------------------------------------------
+
+
+def cmd_canvas_list(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    cfg = args.cfg
+    canvas_cfg = cfg.get("canvas", {})
+    exclude = canvas_cfg.get("exclude", [])
+    projects = cfg.get("projects", {})
+
+    # Lazy import
+    sys.path.insert(0, str(ws))
+    from tools.ui_canvas.manifest import load_all_manifests
+    from tools.ui_canvas.ports import allocate_ports
+
+    manifests = load_all_manifests(ws, projects, exclude)
+    if hasattr(args, "project") and args.project:
+        if args.project not in manifests:
+            raise KeyError(f"No screens.toml found for project: {args.project}")
+        manifests = {args.project: manifests[args.project]}
+
+    all_keys = sorted(k for k in projects.keys() if k not in exclude)
+
+    if not manifests:
+        print("No deploy/screens.toml manifests found.")
+        return
+
+    total = 0
+    print(f"{'PROJECT':<22} {'SCREEN':<25} {'ROUTE':<30} {'VIEWPORT':<14} {'AUTH'}")
+    print("-" * 100)
+    for key in sorted(manifests.keys()):
+        m = manifests[key]
+        ports = allocate_ports(canvas_cfg, all_keys, key)
+        for s in m.screens:
+            auth_label = "yes" if s.auth_required else "no"
+            vp = f"{s.viewport.width}x{s.viewport.height}"
+            print(f"{key:<22} {s.id:<25} {s.route:<30} {vp:<14} {auth_label}")
+            total += 1
+    print(f"\n{total} screens across {len(manifests)} projects (ports: {canvas_cfg.get('port_base', 6100)}+)")
+
+
+def cmd_canvas_capture(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    cfg = args.cfg
+    sys.path.insert(0, str(ws))
+    from tools.ui_canvas.capture import run_capture
+
+    run_capture(
+        workspace_root=ws,
+        cfg=cfg,
+        project_filter=args.project if hasattr(args, "project") else None,
+        screen_filter=args.screen if hasattr(args, "screen") else None,
+        keep_servers=args.keep_servers,
+        use_running=args.use_running,
+        wait_ms=args.wait_ms,
+        label=args.label if hasattr(args, "label") else None,
+        prod=args.prod if hasattr(args, "prod") else False,
+    )
+
+
+def cmd_canvas_grid(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    cfg = args.cfg
+    sys.path.insert(0, str(ws))
+    from tools.ui_canvas.grid import generate_grid
+
+    canvas_cfg = cfg.get("canvas", {})
+    output_base = ws / canvas_cfg.get("output_dir", "artifacts/canvas")
+    capture_dir = args.capture if hasattr(args, "capture") and args.capture else "latest"
+    target = output_base / capture_dir
+    if target.is_symlink():
+        target = target.resolve()
+    if not target.exists():
+        raise FileNotFoundError(f"Capture directory not found: {target}")
+
+    generate_grid(target)
+
+
+def _build_spark_mapping(cfg: dict[str, Any]) -> dict[str, dict]:
+    """Build {project_key: {spark_identifier, display_name}} from platform.toml.
+
+    Identifier preference order:
+      1) ``spark_uuid`` (new)
+      2) ``spark_id`` (legacy integer)
+      3) ``spark_slug`` (optional explicit slug)
+      4) project key (slug fallback)
+    """
+    projects = cfg.get("projects", {})
+    if not isinstance(projects, dict):
+        return {}
+
+    mapping: dict[str, dict] = {}
+    for key, proj in projects.items():
+        if not isinstance(proj, dict):
+            continue
+
+        spark_uuid = proj.get("spark_uuid")
+        spark_id = proj.get("spark_id")
+        spark_slug = proj.get("spark_slug")
+
+        legacy_id: int | None = None
+        if isinstance(spark_id, int):
+            legacy_id = spark_id
+        elif isinstance(spark_id, str) and spark_id.strip().isdigit():
+            legacy_id = int(spark_id.strip())
+
+        spark_identifier: str | int | None = None
+        if isinstance(spark_uuid, str) and spark_uuid.strip():
+            spark_identifier = spark_uuid.strip()
+        elif legacy_id is not None:
+            spark_identifier = legacy_id
+        elif isinstance(spark_slug, str) and spark_slug.strip():
+            spark_identifier = spark_slug.strip()
+        elif isinstance(key, str) and key:
+            spark_identifier = key
+
+        if spark_identifier is None:
+            continue
+
+        record = {
+            "spark_identifier": spark_identifier,
+            "display_name": proj.get("display_name", key),
+        }
+        if legacy_id is not None:
+            record["spark_id"] = legacy_id
+        mapping[key] = record
+
+    return mapping
+
+
+def cmd_canvas_serve(args: argparse.Namespace) -> None:
+    ws = args.workspace_root
+    cfg = args.cfg
+    sys.path.insert(0, str(ws))
+    from tools.ui_canvas.serve import serve_canvas
+
+    canvas_cfg = cfg.get("canvas", {})
+    output_base = ws / canvas_cfg.get("output_dir", "artifacts/canvas")
+    capture_dir = args.capture if hasattr(args, "capture") and args.capture else "latest"
+    target = output_base / capture_dir
+    if target.is_symlink():
+        target = target.resolve()
+    if not target.exists():
+        raise FileNotFoundError(f"Capture directory not found: {target}")
+
+    port = args.port if hasattr(args, "port") else 9000
+
+    # Task creation support
+    api_key = os.environ.get("SPARK_SWARM_API_KEY")
+    api_base = cfg.get("secrets", {}).get(
+        "api_base_url", "https://sparkswarm.com/api/v1"
+    )
+    spark_mapping = _build_spark_mapping(cfg)
+
+    serve_canvas(
+        target,
+        port,
+        api_key=api_key,
+        api_base=api_base,
+        spark_mapping=spark_mapping,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", help="Path to platform.toml (defaults to workspace root/platform.toml)")
+    common.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
+    common.add_argument("--quiet", action="store_true", help="Suppress '+ <cmd>' output")
+
+    p = argparse.ArgumentParser(
+        prog="platform",
+        description="Workspace helper for /Users/richmiles/Source/platform (worktrees, runs, infra, prod).",
+        parents=[common],
+    )
+
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    projects = sub.add_parser("projects", help="Project registry helpers", parents=[common])
+    projects_sub = projects.add_subparsers(dest="projects_cmd", required=True)
+    projects_list = projects_sub.add_parser("list", help="List projects from platform.toml", parents=[common])
+    projects_list.set_defaults(func=cmd_projects_list)
+
+    wt = sub.add_parser("wt", help="Git worktree helpers", parents=[common])
+    wt_sub = wt.add_subparsers(dest="wt_cmd", required=True)
+
+    wt_list = wt_sub.add_parser("list", help="List worktrees for a project", parents=[common])
+    wt_list.add_argument("project")
+    wt_list.set_defaults(func=cmd_wt_list)
+
+    wt_path = wt_sub.add_parser("path", help="Print worktree path for <project> <topic>", parents=[common])
+    wt_path.add_argument("project")
+    wt_path.add_argument("topic")
+    wt_path.set_defaults(func=cmd_wt_path)
+
+    gh = sub.add_parser(
+        "gh",
+        help="Run GitHub CLI as an automation identity (tokens from Spark Swarm)",
+        parents=[common],
+    )
+    gh_sub = gh.add_subparsers(dest="identity", required=True)
+    for identity in sorted(GH_IDENTITY_SECRETS):
+        gh_identity = gh_sub.add_parser(
+            identity,
+            help=f"Run gh as milesautomation-{identity}",
+            parents=[common],
+        )
+        gh_identity.add_argument("gh_args", nargs=argparse.REMAINDER, help="Arguments passed to gh")
+        gh_identity.set_defaults(func=cmd_gh_identity)
+
+    agent = sub.add_parser(
+        "agent",
+        help="Launch agent CLIs with their default GitHub identity token exported",
+        parents=[common],
+    )
+    agent_sub = agent.add_subparsers(dest="agent", required=True)
+    for identity in sorted(GH_IDENTITY_SECRETS):
+        agent_identity = agent_sub.add_parser(
+            identity,
+            help=f"Launch {identity} with GH_TOKEN for milesautomation-{identity}",
+            parents=[common],
+        )
+        agent_identity.add_argument(
+            "agent_args",
+            nargs=argparse.REMAINDER,
+            help="Command to run (defaults to codex/claude)",
+        )
+        agent_identity.set_defaults(func=cmd_agent_launch)
+
+    wt_add = wt_sub.add_parser("add", help="Add a worktree at wt/<project>-<topic>", parents=[common])
+    wt_add.add_argument("project")
+    wt_add.add_argument("topic")
+    wt_add.add_argument("--branch", help="Branch name to create (default: feature/<topic>)")
+    wt_add.add_argument("--from", dest="from_ref", help="Start point ref (default: origin/<default_branch>)")
+    wt_add.add_argument("--path", help="Override worktree path")
+    wt_add.add_argument("--fetch", action="store_true", help="Run 'git fetch origin' before creating")
+    wt_add.set_defaults(func=cmd_wt_add)
+
+    wt_rm = wt_sub.add_parser("rm", help="Remove a worktree at wt/<project>-<topic>", parents=[common])
+    wt_rm.add_argument("project")
+    wt_rm.add_argument("topic")
+    wt_rm.add_argument("--path", help="Override worktree path")
+    wt_rm.add_argument("--force", action="store_true", help="Pass --force to git worktree remove")
+    wt_rm.set_defaults(func=cmd_wt_rm)
+
+    run = sub.add_parser("run", help="Run a Make target in a repo or worktree", parents=[common])
+    run.add_argument("project")
+    run.add_argument("target")
+    run.add_argument("--wt", help="Worktree topic (e.g. 212) to run against")
+    run.set_defaults(func=cmd_run)
+
+    check = sub.add_parser("check", help="Run the default check target (make check)", parents=[common])
+    check.add_argument("project", nargs="?", help="Optional project key; otherwise runs all (excluding platform-infra)")
+    check.add_argument("--target", default="check", help="Make target to run (default: check)")
+    check.add_argument("--wt", help="Worktree topic to run against")
+    check.set_defaults(func=cmd_check)
+
+    infra = sub.add_parser("infra", help="Local platform-infra docker compose wrappers", parents=[common])
+    infra_sub = infra.add_subparsers(dest="infra_cmd", required=True)
+    infra_ps = infra_sub.add_parser("ps", help="docker compose ps (local)", parents=[common])
+    infra_ps.set_defaults(func=cmd_infra_ps)
+    infra_logs = infra_sub.add_parser("logs", help="docker compose logs (local)", parents=[common])
+    infra_logs.add_argument("service")
+    infra_logs.add_argument("--tail", type=int, default=200)
+    infra_logs.add_argument("-f", "--follow", action="store_true")
+    infra_logs.set_defaults(func=cmd_infra_logs)
+
+    prod = sub.add_parser("prod", help="Prod wrappers (ssh/rsync to droplet)", parents=[common])
+    prod_sub = prod.add_subparsers(dest="prod_cmd", required=True)
+
+    prod_ps = prod_sub.add_parser("ps", help="docker ps on the droplet (read-only)", parents=[common])
+    prod_ps.set_defaults(func=cmd_prod_ps)
+
+    prod_logs = prod_sub.add_parser("logs", help="docker compose logs on the droplet (read-only)", parents=[common])
+    prod_logs.add_argument("service")
+    prod_logs.add_argument("--tail", type=int, default=200)
+    prod_logs.add_argument("-f", "--follow", action="store_true")
+    prod_logs.set_defaults(func=cmd_prod_logs)
+
+    prod_sync = prod_sub.add_parser("sync", help="Sync configs to the droplet", parents=[common])
+    prod_sync_sub = prod_sync.add_subparsers(dest="prod_sync_cmd", required=True)
+    prod_sync_infra = prod_sync_sub.add_parser("infra", help="rsync repos/platform-infra/ to the droplet", parents=[common])
+    prod_sync_infra.add_argument("--yes", action="store_true")
+    prod_sync_infra.set_defaults(func=cmd_prod_sync_infra)
+
+    prod_deploy = prod_sub.add_parser("deploy", help="Deploy a service on the droplet", parents=[common])
+    prod_deploy.add_argument("target", help="Project key (mapped to infra_service) or raw service name")
+    prod_deploy.add_argument("--yes", action="store_true")
+    prod_deploy.add_argument("--pull-only", action="store_true")
+    prod_deploy.set_defaults(func=cmd_prod_deploy)
+
+    prod_deploy_tarball = prod_sub.add_parser(
+        "deploy-tarball",
+        help="Emergency deploy: build locally, save tarball, SCP to droplet, docker load + restart",
+        parents=[common],
+    )
+    prod_deploy_tarball.add_argument("target", help="Project key (mapped to infra_service) or raw service name")
+    prod_deploy_tarball.add_argument("--tag", required=True, help="Image tag (e.g. sha-abc1234 or tarball-20260313)")
+    prod_deploy_tarball.add_argument("--yes", action="store_true")
+    prod_deploy_tarball.add_argument("--image", help="Override full image name (default: ghcr_image from platform.toml)")
+    prod_deploy_tarball.add_argument("--context", help="Override Docker build context directory (default: project repo_dir)")
+    prod_deploy_tarball.add_argument("--tarball", help="Override tarball path (default: /tmp/<service>-<tag>.tar)")
+    prod_deploy_tarball.add_argument("--keep-tarball", action="store_true", help="Do not delete local tarball after transfer")
+    prod_deploy_tarball.add_argument("--load-only", action="store_true", help="Only build/transfer/load; skip tag update + restart")
+    prod_deploy_tarball.add_argument("--health-domain", help="Domain for health check Host header (default: first project domain)")
+    prod_deploy_tarball.add_argument("--health-path", default="/healthz", help="Health check path (default: /healthz)")
+    prod_deploy_tarball.set_defaults(func=cmd_prod_deploy_tarball)
+
+    prod_caddy = prod_sub.add_parser("caddy", help="Caddy helpers on the droplet", parents=[common])
+    prod_caddy_sub = prod_caddy.add_subparsers(dest="prod_caddy_cmd", required=True)
+    prod_caddy_restart = prod_caddy_sub.add_parser("restart", help="Restart caddy (dangerous)", parents=[common])
+    prod_caddy_restart.add_argument("--yes", action="store_true")
+    prod_caddy_restart.add_argument("--really", action="store_true", help="Extra confirmation for disruptive action")
+    prod_caddy_restart.set_defaults(func=cmd_prod_caddy_restart)
+
+    prod_drift = prod_sub.add_parser(
+        "drift",
+        help="Detect drift between local repos/platform-infra and the droplet (read-only)",
+        parents=[common],
+    )
+    prod_drift.add_argument(
+        "--allow-drift",
+        action="store_true",
+        help="Exit 0 even if drift is detected (still prints drift lines)",
+    )
+    prod_drift.set_defaults(func=cmd_prod_drift)
+
+    prod_rollout = prod_sub.add_parser(
+        "rollout",
+        help="Deterministic rollout: set tag -> pull -> migrate -> up -> health (rollback on fail)",
+        parents=[common],
+    )
+    prod_rollout.add_argument("target", help="Project key (mapped to infra_service) or raw service name")
+    prod_rollout.add_argument("--tag", required=True, help="Image tag to set in prod .env (e.g. sha-abc1234)")
+    prod_rollout.add_argument("--yes", action="store_true")
+    prod_rollout.add_argument("--apply-secrets", action="store_true", help="Run 'prod secrets apply' first (project targets only)")
+    prod_rollout.add_argument("--secrets-env", default="production", help="SparkSwarm secrets environment (default: production)")
+    prod_rollout.add_argument("--no-migrate", action="store_true", help="Skip migrations even if deploy/pack.toml defines them")
+    prod_rollout.add_argument("--no-rollback", action="store_true", help="Do not rollback on failed health check")
+    prod_rollout.add_argument("--health-domain", help="Domain for Host header (defaults to first project domain)")
+    prod_rollout.add_argument("--health-path", default="/healthz", help="Health path (default: /healthz)")
+    prod_rollout.add_argument("--health-retries", type=int, default=45)
+    prod_rollout.add_argument("--health-delay-seconds", type=float, default=2.0)
+    prod_rollout.set_defaults(func=cmd_prod_rollout)
+
+    secrets = sub.add_parser("secrets", help="SparkSwarm secrets helpers", parents=[common])
+    secrets_sub = secrets.add_subparsers(dest="secrets_cmd", required=True)
+
+    secrets_required = secrets_sub.add_parser("required", help="List required secrets for a project", parents=[common])
+    secrets_required.add_argument("project")
+    secrets_required.set_defaults(func=cmd_secrets_required)
+
+    secrets_put = secrets_sub.add_parser("put", help="Upsert a secret (requires SPARK_SWARM_API_KEY env)", parents=[common])
+    secrets_put.add_argument("project")
+    secrets_put.add_argument("environment")
+    secrets_put.add_argument("name")
+    secrets_put.add_argument("--stdin", action="store_true", help="Read secret value from stdin")
+    secrets_put.set_defaults(func=cmd_secrets_put)
+
+    secrets_list = secrets_sub.add_parser(
+        "list",
+        help="List secret names for a project/environment (metadata only; requires SPARK_SWARM_API_KEY env)",
+        parents=[common],
+    )
+    secrets_list.add_argument("project")
+    secrets_list.add_argument("environment")
+    secrets_list.set_defaults(func=cmd_secrets_list)
+
+    secrets_delete = secrets_sub.add_parser(
+        "delete",
+        help="Delete a secret for a project/environment (requires SPARK_SWARM_API_KEY env)",
+        parents=[common],
+    )
+    secrets_delete.add_argument("project")
+    secrets_delete.add_argument("environment")
+    secrets_delete.add_argument("name")
+    secrets_delete.add_argument("--yes", action="store_true")
+    secrets_delete.set_defaults(func=cmd_secrets_delete)
+
+    secrets_export = secrets_sub.add_parser(
+        "export-dotenv",
+        help="Export secrets as dotenv (requires SPARK_SWARM_API_KEY env)",
+        parents=[common],
+    )
+    secrets_export.add_argument("project")
+    secrets_export.add_argument("environment")
+    secrets_export.set_defaults(func=cmd_secrets_export_dotenv)
+
+    prod_secrets = prod_sub.add_parser("secrets", help="Prod secrets helpers", parents=[common])
+    prod_secrets_sub = prod_secrets.add_subparsers(dest="prod_secrets_cmd", required=True)
+    prod_secrets_apply = prod_secrets_sub.add_parser(
+        "apply",
+        help="Apply SparkSwarm-exported secrets into /root/platform-infra/.env (requires SPARK_SWARM_API_KEY in that file)",
+        parents=[common],
+    )
+    prod_secrets_apply.add_argument("project")
+    prod_secrets_apply.add_argument("environment")
+    prod_secrets_apply.add_argument("--yes", action="store_true")
+    prod_secrets_apply.set_defaults(func=cmd_prod_secrets_apply)
+
+    dns = sub.add_parser("dns", help="DNS helpers", parents=[common])
+    dns_sub = dns.add_subparsers(dest="dns_cmd", required=True)
+    dns_apply = dns_sub.add_parser(
+        "apply",
+        help="Ensure DNS records exist for a project (Cloudflare token stored in SparkSwarm; requires SPARK_SWARM_API_KEY env)",
+        parents=[common],
+    )
+    dns_apply.add_argument("project")
+    dns_apply.add_argument("environment")
+    dns_apply.set_defaults(func=cmd_dns_apply)
+
+    dns_email_apply = dns_sub.add_parser(
+        "email-apply",
+        help="Apply email DNS records (MX, SPF, DKIM) for a project domain via Cloudflare",
+        parents=[common],
+    )
+    dns_email_apply.add_argument("project")
+    dns_email_apply.add_argument("environment")
+    dns_email_apply.set_defaults(func=cmd_dns_email_apply)
+
+    analytics = sub.add_parser("analytics", help="Analytics helpers", parents=[common])
+    analytics_sub = analytics.add_subparsers(dest="analytics_cmd", required=True)
+
+    analytics_umami = analytics_sub.add_parser("umami", help="Umami helpers", parents=[common])
+    analytics_umami_sub = analytics_umami.add_subparsers(dest="analytics_umami_cmd", required=True)
+
+    analytics_umami_ensure = analytics_umami_sub.add_parser(
+        "ensure",
+        help="Ensure an Umami website exists for a project domain (stores id on the spark by default)",
+        parents=[common],
+    )
+    analytics_umami_ensure.add_argument("project")
+    analytics_umami_ensure.add_argument("--domain", help="Override domain (default: project apex domain)")
+    analytics_umami_ensure.add_argument("--name", help="Override Umami website display name (default: project display_name)")
+    analytics_umami_ensure.add_argument("--spark", help="Override spark slug to store settings under (default: <project>)")
+    analytics_umami_ensure.add_argument("--no-store", action="store_true", help="Do not store mapping on the Spark record")
+    analytics_umami_ensure.add_argument("--yes", action="store_true", help="Allow creating a new Umami website row if missing")
+    analytics_umami_ensure.set_defaults(func=cmd_analytics_umami_ensure)
+
+    spark = sub.add_parser("spark", help="Spark lifecycle helpers", parents=[common])
+    spark_sub = spark.add_subparsers(dest="spark_cmd", required=True)
+    spark_run = spark_sub.add_parser("run", help="Run orchestration commands", parents=[common])
+    spark_run_sub = spark_run.add_subparsers(dest="spark_run_cmd", required=True)
+
+    spark_run_start = spark_run_sub.add_parser("start", help="Start a lifecycle run", parents=[common])
+    spark_run_start.add_argument("spark", help="Spark slug")
+    spark_run_start.add_argument("--trigger", default="manual", help="Run trigger label")
+    spark_run_start.add_argument(
+        "--step",
+        action="append",
+        default=[],
+        help="Step name (repeatable; defaults to API default)",
+    )
+    spark_run_start.add_argument(
+        "--max-retries", type=int, default=3, help="Max retry attempts per step"
+    )
+    spark_run_start.add_argument("--json", action="store_true", help="Output full JSON")
+    spark_run_start.set_defaults(func=cmd_spark_run_start)
+
+    spark_run_status = spark_run_sub.add_parser(
+        "status", help="Show run status timeline", parents=[common]
+    )
+    spark_run_status.add_argument("run_id", type=int)
+    spark_run_status.add_argument("--json", action="store_true", help="Output full JSON")
+    spark_run_status.set_defaults(func=cmd_spark_run_status)
+
+    spark_run_resume = spark_run_sub.add_parser(
+        "resume", help="Resume first non-terminal step", parents=[common]
+    )
+    spark_run_resume.add_argument("run_id", type=int)
+    spark_run_resume.add_argument("--json", action="store_true", help="Output full JSON")
+    spark_run_resume.set_defaults(func=cmd_spark_run_resume)
+
+    # -- canvas ---------------------------------------------------------------
+    canvas = sub.add_parser("canvas", help="UI Canvas: capture & compare screens across all sparks", parents=[common])
+    canvas_sub = canvas.add_subparsers(dest="canvas_cmd", required=True)
+
+    canvas_list = canvas_sub.add_parser("list", help="List declared screens from manifests", parents=[common])
+    canvas_list.add_argument("project", nargs="?", help="Only show screens for this project")
+    canvas_list.set_defaults(func=cmd_canvas_list)
+
+    canvas_capture = canvas_sub.add_parser("capture", help="Capture screenshots of declared screens", parents=[common])
+    canvas_capture.add_argument("project", nargs="?", help="Capture only this project")
+    canvas_capture.add_argument("--screen", action="append", help="Capture only these screen IDs (repeatable)")
+    canvas_capture.add_argument("--keep-servers", action="store_true", help="Leave dev servers running after capture")
+    canvas_capture.add_argument("--use-running", action="store_true", help="Detect and reuse already-running dev servers")
+    canvas_capture.add_argument("--wait-ms", type=int, default=2000, help="Network idle wait in ms (default: 2000)")
+    canvas_capture.add_argument("--label", help="Label for this capture run")
+    canvas_capture.add_argument("--prod", action="store_true", help="Capture from production URLs instead of local dev servers")
+    canvas_capture.set_defaults(func=cmd_canvas_capture)
+
+    canvas_grid = canvas_sub.add_parser("grid", help="Generate composite grid image from captures", parents=[common])
+    canvas_grid.add_argument("--capture", help="Timestamp dir to use (default: latest)")
+    canvas_grid.set_defaults(func=cmd_canvas_grid)
+
+    canvas_serve = canvas_sub.add_parser("serve", help="Start live canvas HTTP server", parents=[common])
+    canvas_serve.add_argument("--port", type=int, default=9000, help="HTTP port (default: 9000)")
+    canvas_serve.add_argument("--capture", help="Timestamp dir to serve (default: latest)")
+    canvas_serve.set_defaults(func=cmd_canvas_serve)
+
+    return p
+
+
+def main(argv: list[str]) -> int:
+    parser = build_parser()
+    passthrough: list[str] = []
+    if "--" in argv:
+        i = argv.index("--")
+        passthrough = argv[i + 1 :]
+        argv = argv[:i]
+
+    args = parser.parse_args(argv)
+
+    workspace_root = find_workspace_root(Path.cwd())
+    cfg = load_config(workspace_root, args.config)
+
+    args.workspace_root = workspace_root
+    args.cfg = cfg
+    args.passthrough = passthrough
+
+    if passthrough and args.cmd not in {"run", "gh", "agent"}:
+        raise SystemExit("Extra args after '--' are only supported for 'platform run', 'platform gh', and 'platform agent'")
+
+    try:
+        args.func(args)
+    except BrokenPipeError:
+        return 141
+    except (KeyError, ValueError, FileNotFoundError) as e:
+        _eprint(f"Error: {e}")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
