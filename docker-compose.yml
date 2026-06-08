@@ -41,7 +41,7 @@ services:
 
   # Shared Postgres database
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     restart: unless-stopped
     mem_limit: 384m
     environment:
@@ -49,7 +49,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: postgres
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # PG18+ official image stores the cluster in a version-specific subdir
+      # (/var/lib/postgresql/18/docker); the volume MUST mount at
+      # /var/lib/postgresql (not /.../data as in <=16). See docker-library/postgres#37.
+      - postgres_data:/var/lib/postgresql
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     networks:
       - internal
