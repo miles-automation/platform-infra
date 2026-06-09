@@ -31,7 +31,9 @@ callofthenoodle.com {
 humanindex.io {
 	encode zstd gzip
 	header /assets/* Cache-Control "public, max-age=31536000, immutable"
-	reverse_proxy human-index:8000
+	# Cut over to the v2 rebuild (2026-06-08). The legacy human-index service stays running
+	# but dormant/unrouted; revert this line + reload Caddy to roll back.
+	reverse_proxy human-index-v2:8000
 }
 
 www.humanindex.io {
