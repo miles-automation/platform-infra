@@ -195,14 +195,17 @@ secrets/events.
 We hand-deployed human-index-v2 to `humanindex.io` (apex cutover; v1 → dormant) end-to-end to
 surface what the automated system must handle. What we hit:
 
-1. **🔴 Single-file bind mount + rsync = silently stale config (the big one).** `bin/platform
-   prod sync infra` rsyncs `Caddyfile`, which **replaces the file's inode**. Caddy's
-   `./Caddyfile:/etc/caddy/Caddyfile:ro` mount is pinned to the *old* inode, so `caddy reload`
-   re-reads the **stale** file — the route change silently doesn't apply. The container sees v1
-   while the host file says v2. **This means every Caddyfile change via the documented
-   sync+reload path silently no-ops.** Fix the deploy step: bind-mount the *directory* (not the
-   file), or write in-place (`cat > file`, preserving the inode), or always *restart* (not
-   reload) Caddy after a Caddyfile change. The pipeline's `deploy` action must own this.
+1. **🔴 Single-file bind mount + rsync = silently stale config (the big one). ✅ FIXED
+   (main `cd4f8d0`).** `bin/platform prod sync infra` rsyncs `Caddyfile`, which **replaces the
+   file's inode**. Caddy's `./Caddyfile:/etc/caddy/Caddyfile:ro` mount was pinned to the *old*
+   inode, so `caddy reload` re-read the **stale** file — the route change silently didn't apply
+   (container saw v1 while the host file said v2). **Every Caddyfile change via the documented
+   sync+reload path silently no-op'd.** **Fix applied:** moved the Caddyfile to `caddy/Caddyfile`
+   and mount the **directory** (`./caddy:/etc/caddy:ro`), which reflects current contents
+   regardless of how the file is replaced. One-time `docker compose up -d caddy` recreate;
+   afterwards sync+reload propagates with no restart (verified live). The pipeline's `deploy`
+   action should still treat config propagation as first-class — this bug class recurs with any
+   single-file config mount.
 
 2. **🔴 Health-check parity can't confirm *which* app is serving.** v1 and v2 both answer
    `/healthz` → `{"status":"ok","db":"ok"}`, so the cutover *looked* done (200 OK) while still
