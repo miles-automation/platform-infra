@@ -1,3 +1,4 @@
+# Directory-mounted (./caddy:/etc/caddy); changes propagate via `prod sync infra` + `caddy reload`. Verified 2026-06-08.
 # IEOMD - Time-locked secret delivery
 ieomd.com {
 	encode zstd gzip
