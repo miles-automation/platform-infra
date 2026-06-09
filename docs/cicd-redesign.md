@@ -1,8 +1,8 @@
-# CI/CD Redesign — Design Doc (DRAFT for review)
+# CI/CD Redesign — Design Doc
 
-> **Status:** proposal, awaiting Rich's annotations. Nothing built yet. This is the
-> "decide what we want and how we run it" doc before any code moves. Annotate the
-> **Open Decisions** inline — each is a real fork.
+> **Status:** **decisions made (D1–D7, with Rich, 2026-06-08); implementation plan written
+> (§12).** Build the `platform-ci` worker per the C-queue, pilot on human-index-v2. The big
+> deploy footgun surfaced during the v2 manual deploy (§11) is already fixed.
 
 ## 1. Why we're doing this
 
@@ -107,55 +107,17 @@ API call, not a pipeline). The per-repo YAML sprawl → deleted.
 - **Builds** need RAM → a **fresh, right-sized CI droplet** (2–4 GB), not the dead 1 GB box.
 - **Deploy path is unchanged** — `bin/platform prod rollout` already does it well.
 
-## 7. Open Decisions (annotate inline)
+## 7. Decisions (RESOLVED 2026-06-08, with Rich)
 
-### D1 — How do the pipelines run? `[FORK]`
-- **(a) Platform-native** — a small `platform-ci` worker we own: webhook → Spark Swarm run →
-  `bin/platform` stages → GitHub commit status. Most consistent with everything else; CI/CD
-  becomes a first-class part of the platform; all our code. **More to build/maintain.**
-- **(b) Off-the-shelf (Woodpecker CI)** — install Woodpecker on the CI droplet; pipelines are
-  small config files that invoke `bin/platform` stages. Mature UI/retries, less custom code;
-  **a third-party component not integrated with Spark Swarm.**
-- **(c) Hybrid** — Woodpecker triggers/runs; `bin/platform` does the work; Spark Swarm records
-  the event. Splits the difference; two systems to understand.
-- _Rich:_ <!-- pick a/b/c + why -->
-
-### D2 — CI droplet sizing & lifecycle `[FORK]`
-Fresh droplet (the 1 GB one is dead). 2 GB (builds fit, tight) vs 4 GB (headroom for parallel
-builds + a CI server). Dedicated CI box vs fold onto an existing one (not the prod box).
-- _Rich:_ <!-- size + dedicated? -->
-
-### D3 — Is Spark Swarm the CI/CD control plane? `[FORK]`
-Spark Swarm already has runs/events/secrets/SLO. Making CI/CD runs *be* Spark Swarm runs is
-the most "platform-native" story (one dashboard, retryable, audited). Counter: it couples CI to
-Spark Swarm's availability. Yes / partial (events only) / no.
-- _Rich:_ <!-- -->
-
-### D4 — Trigger mechanism `[FORK]`
-GitHub **webhook** → CI droplet (real-time, needs a public endpoint + HMAC verify) vs **poll**
-GitHub for new commits (simpler, no inbound endpoint, slight latency) vs **git push-to-deploy**
-to a droplet remote (no GitHub dependency at all for triggering).
-- _Rich:_ <!-- -->
-
-### D5 — Keep ephemeral staging droplets? `[FORK]`
-The current `/stage` flow spins up a throwaway DO droplet per PR (`ephemeral_stage.py`). Keep
-as-is, simplify to a shared staging service, or drop staging for now (deploy straight to prod
-with rollback)?
-- _Rich:_ <!-- -->
-
-### D6 — Registry: keep ghcr.io? `[FORK]`
-Images live in GitHub Container Registry today. "Off GitHub infra" could extend to a
-self-hosted registry on the droplet. Keep ghcr (free, works, low effort) vs self-host
-(full independence, more to run). _Recommendation: keep ghcr for now — it's not the cost or
-the pain point._
-- _Rich:_ <!-- -->
-
-### D7 — What's the merge gate without GitHub Actions? `[FORK]`
-Today PR "required checks" are GHA jobs. Off GHA, the gate becomes a **commit status** posted
-by the platform-ci worker (GitHub still enforces "status must be green to merge"), plus
-commit-guard locally. Confirm that's the model (vs. trusting commit-guard alone on unprotected
-repos).
-- _Rich:_ <!-- -->
+| | Decision |
+|---|---|
+| **D1 — engine** | **Build our own thin `platform-ci` worker.** `bin/platform` is already the engine (the v2 deploy proved it); a webhook → `bin/platform` action → commit-status worker is small + fully ours. Woodpecker would mostly just call `bin/platform` anyway. |
+| **D2 — CI droplet** | **Fresh, dedicated 2 GB droplet** (the 1 GB box OOM'd on builds). Replaces the dead runner. |
+| **D3 — control plane** | **Yes — Spark Swarm.** Each CI run *is* a Spark Swarm run/event → observability + retries + audit without building a UI. |
+| **D4 — trigger** | **GitHub webhook** (HMAC-verified) → the worker. |
+| **D5 — staging** | **Drop ephemeral staging.** Deploy straight to prod with the health-check + auto-rollback (proven on v2), gated by `check` + commit-guard. Re-add staging only if a real need appears. |
+| **D6 — registry** | **Keep ghcr.io** — works, free, not the pain point. Self-hosted `registry:2` already on the droplet as a fallback. |
+| **D7 — merge gate** | **Commit-status gate.** The worker posts a GitHub commit status; "must be green to merge" still enforced, zero GHA. commit-guard stays the local pre-push gate. |
 
 ## 8. Migration plan (pilot-first)
 
@@ -243,3 +205,47 @@ surface what the automated system must handle. What we hit:
 contract files) is solid. The gaps are **onboarding scaffolding**, **config-propagation
 correctness** (the bind-mount bug), and **identity-aware verification** — exactly what the
 pipeline `check`/`build`/`deploy` actions plus an `onboard` command should own.
+
+## 12. Implementation plan (`platform-ci`)
+
+The decided system: a small **`platform-ci` worker** we own, on a dedicated 2 GB droplet, that
+receives a GitHub webhook → runs the matching `bin/platform` action → posts a GitHub commit
+status + records a Spark Swarm run. commit-guard stays the local pre-push gate; ghcr stays the
+registry; no ephemeral staging; deploy is prod-with-rollback. GitHub = git host + registry only.
+
+**Worker shape:** a FastAPI service. `POST /webhook` (HMAC-verified) → map `(repo, event)` to
+`(project from platform.toml, action)` → run the action → report. Concurrency serialized (small
+box). Holds: a GitHub token (commit status + clone), ghcr push creds, the prod SSH key, a Spark
+Swarm key — in the CI droplet `.env` / Spark Swarm, never the repo.
+
+Ordered queue (each ~one focused session; pilot every action on **human-index-v2** first — it's
+already GHA-free):
+
+- **C1 — CI droplet + worker skeleton + reachable webhook.** Provision a fresh 2 GB DO droplet
+  (Docker + Caddy for TLS). Stand up the worker with an HMAC-verified `/webhook` that logs
+  deliveries. Route `ci.sparkswarm.com` (or similar) → worker. Register one GitHub webhook
+  (org-level). **Done:** a push delivers a verified webhook to the worker.
+- **C2 — `check` action (first real pipeline).** On push/PR for a registered project: clone at
+  the SHA, run `make check` (in a container to avoid toolchain drift), post a GitHub
+  **commit status** (pending → success/failure). **Done:** a v2 PR is gated by a platform-ci
+  status, no GHA. *(This is the MVP — C1+C2 replace `ci.yml` for one repo.)*
+- **C3 — `build` action.** On merge to the default branch (or a tag): `docker build` →
+  push ghcr `sha-<short>`, record the image. **Done:** merging v2 main yields a pushed image.
+- **C4 — `deploy` action.** Human-gated trigger (a `/deploy` comment, a tag, or `bin/platform ci
+  deploy`) → worker runs `bin/platform prod rollout <project> --tag sha-<short>` (health-check +
+  rollback already built in). **Done:** a v2 deploy runs end-to-end through the worker.
+- **C5 — Spark Swarm run integration.** Each action opens/updates a Spark Swarm run + emits
+  start/step/result events. **Done:** CI runs are visible + retryable in the Spark Swarm dashboard.
+- **C6 — `bin/platform onboard <project>`.** Scaffold a new fleet service from the v2 lessons:
+  `deploy/pack.toml`, `/healthz` + `/api/v1/healthz` check, compose service stanza, Caddy route,
+  DB + role, a secret, a `platform.toml` entry. **Done:** onboarding a service is one command,
+  not ~9 manual steps.
+- **C7 — Scheduled checks.** Cron (or Spark Swarm scheduled runs): SLO gate + uptime + fleet
+  drift. Replaces `reliability-slo.yml` and the scheduled `docs-drift`.
+- **C8 — Fleet migration + GHA removal.** Per repo: register the webhook, confirm
+  check/build/deploy, then **delete `.github/workflows`**. Flip the fleet-contract checker to
+  **forbid** `.github/workflows` (their presence becomes the violation). Decommission the dead
+  1 GB runner droplet + the org GitHub Actions runner registration.
+
+**Milestones:** C1–C2 = one repo gated off GHA (the proof). C3–C4 = full v2 lifecycle on
+`platform-ci`. C6 = new services are cheap. C8 = fleet off GitHub Actions entirely.
