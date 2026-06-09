@@ -218,6 +218,21 @@ services:
       postgres:
         condition: service_healthy
 
+  # Human Index v2 - fresh-DB rebuild (FastAPI + built SPA). Takes over humanindex.io;
+  # the legacy human-index service stays defined but dormant (unrouted).
+  human-index-v2:
+    image: ghcr.io/miles-automation/human-index-v2-app:${HUMAN_INDEX_V2_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_V2_DB_USER:-human_index_v2}:${HUMAN_INDEX_V2_DB_PASSWORD:?Set HUMAN_INDEX_V2_DB_PASSWORD in .env}@postgres:5432/${HUMAN_INDEX_V2_DB_NAME:-human_index_v2}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Esher's Codex - Math curriculum app
   eshers-codex:
     image: ghcr.io/miles-automation/eshers-codex-app:${ESHERS_CODEX_IMAGE_TAG:-latest}
