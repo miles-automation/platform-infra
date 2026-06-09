@@ -189,3 +189,54 @@ secrets/events.
   secrets + droplet `.env`, not in the repo.
 - **commit-guard is the only gate on `git push`**, but unprotected branches mean a determined
   push can skip it — the commit-status gate on PRs is the real enforcement for merges.
+
+## 11. Lessons from the v2 manual deploy (2026-06-08)
+
+We hand-deployed human-index-v2 to `humanindex.io` (apex cutover; v1 → dormant) end-to-end to
+surface what the automated system must handle. What we hit:
+
+1. **🔴 Single-file bind mount + rsync = silently stale config (the big one).** `bin/platform
+   prod sync infra` rsyncs `Caddyfile`, which **replaces the file's inode**. Caddy's
+   `./Caddyfile:/etc/caddy/Caddyfile:ro` mount is pinned to the *old* inode, so `caddy reload`
+   re-reads the **stale** file — the route change silently doesn't apply. The container sees v1
+   while the host file says v2. **This means every Caddyfile change via the documented
+   sync+reload path silently no-ops.** Fix the deploy step: bind-mount the *directory* (not the
+   file), or write in-place (`cat > file`, preserving the inode), or always *restart* (not
+   reload) Caddy after a Caddyfile change. The pipeline's `deploy` action must own this.
+
+2. **🔴 Health-check parity can't confirm *which* app is serving.** v1 and v2 both answer
+   `/healthz` → `{"status":"ok","db":"ok"}`, so the cutover *looked* done (200 OK) while still
+   serving v1. Only the OpenAPI route set revealed it. **Deploy verification must check an
+   identity/version signal** (a `/version` endpoint, the image SHA, or a known route), not just
+   health 200s.
+
+3. **🟡 New-service onboarding is a large manual surface.** A working app still needed ~9
+   artifacts/registrations across 3 repos + the droplet: `deploy/pack.toml`, `/healthz` +
+   `/api/v1/healthz`, a compose service, a Caddy route, a DB + role, droplet `.env` vars, a
+   Spark Swarm secret, a `platform.toml` entry, (DNS already existed). **The platform needs a
+   `bin/platform onboard <project>` that scaffolds all of these from `pack.toml`/`platform.toml`.**
+
+4. **🟡 Health-endpoint convention drift.** v2 shipped only `/health`; the fleet contract +
+   `prod rollout` want DB-checked `/healthz` + `/api/v1/healthz`. The pipeline `check` action (or
+   a scaffold lint) should enforce the contract endpoints.
+
+5. **🟡 Secrets onboarding gap.** The global Spark Swarm API key is **scoped to one project**, so
+   it couldn't write a *new* project's secret (`403 insufficient_scope`). New-project onboarding
+   must provision a per-project secrets key — the worker/onboard flow needs an admin-scoped key.
+
+6. **🟡 "New service takes an existing domain" isn't a `prod rollout` flow.** `prod rollout`
+   health-checks *via the domain*, which still points at the old service until cutover. A
+   takeover needs **bring-up → verify internally → cutover route → verify externally**, a
+   distinct sequence the pipeline should model (vs. same-service tag bumps).
+
+7. **🟢 Boot window ~30s** (alembic + `uv` startup). The deploy health-check must allow for it
+   (the rollout's 45×2s window does). Codify a generous default.
+
+8. **🟢 Already present: a self-hosted Docker registry** (`registry:2` on the droplet,
+   `127.0.0.1:5000`, "GHCR fallback / GitHub-free deploys"). D6 (registry independence) is
+   *already half-built* — worth folding into the design rather than defaulting to ghcr.
+
+**Net:** the deploy *substrate* (`bin/platform prod rollout`, the image→ghcr→pull path, the
+contract files) is solid. The gaps are **onboarding scaffolding**, **config-propagation
+correctness** (the bind-mount bug), and **identity-aware verification** — exactly what the
+pipeline `check`/`build`/`deploy` actions plus an `onboard` command should own.
