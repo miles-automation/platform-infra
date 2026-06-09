@@ -1584,9 +1584,9 @@ def cmd_prod_drift(args: argparse.Namespace) -> None:
     remote_compose = prod_compose_file(args)
 
     local_compose = Path(infra_compose_file(args))
-    local_caddy = local_compose.parent / "Caddyfile"
+    local_caddy = local_compose.parent / "caddy" / "Caddyfile"
 
-    remote_caddy = f"{remote_dir}/Caddyfile"
+    remote_caddy = f"{remote_dir}/caddy/Caddyfile"
 
     issues: list[str] = []
 

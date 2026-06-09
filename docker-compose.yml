@@ -9,7 +9,10 @@ services:
       - "443:443"
       - "443:443/udp" # HTTP/3
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Mount the DIRECTORY, not the file: a single-file bind mount pins to the inode, so an
+      # rsync/editor that replaces the file leaves the container reading STALE config and
+      # `caddy reload` silently no-ops. A directory mount always reflects current contents.
+      - ./caddy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:

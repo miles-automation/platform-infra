@@ -33,7 +33,7 @@ Before editing files, decide:
 ## Files you will touch
 
 - `docker-compose.yml`: add your service(s)
-- `Caddyfile`: add hostname routing
+- `caddy/Caddyfile`: add hostname routing
 - `.env.example`: document new env vars
 - `init-db.sql`: add DB/user for fresh installs (and/or apply manually on existing installs)
 
@@ -97,7 +97,7 @@ api.example.com {
 }
 ```
 
-### 2) `Caddyfile` hostname routing
+### 2) `caddy/Caddyfile` hostname routing
 
 Add a new block to route traffic to the internal service:
 

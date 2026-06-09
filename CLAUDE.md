@@ -29,6 +29,9 @@ Run from the workspace root:
 ## Files that matter
 
 - `docker-compose.yml` - running services and image tags
-- `Caddyfile` - domain routing
+- `caddy/Caddyfile` - domain routing (mounted as a DIRECTORY `./caddy:/etc/caddy:ro`, not a
+  single file — a file mount pins the inode, so an rsync-replaced Caddyfile would leave the
+  container on stale config and `caddy reload` would silently no-op). Changes now propagate
+  via `prod sync infra` + `caddy reload`, no container restart needed.
 - `.env.example` - documented env vars (actual `.env` lives only on the droplet)
 - `init-db.sql` - initial Postgres DB/user creation (only applies on fresh Postgres)
