@@ -230,6 +230,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_V2_DB_USER:-human_index_v2}:${HUMAN_INDEX_V2_DB_PASSWORD:?Set HUMAN_INDEX_V2_DB_PASSWORD in .env}@postgres:5432/${HUMAN_INDEX_V2_DB_NAME:-human_index_v2}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Spark Swarm OAuth (authed iMessage ingest). Empty client creds / seed-sub leave ingest
+      # fail-closed (503/403); the digest + comment SPA endpoints are unaffected.
+      SPARK_SWARM_BASE_URL: ${SPARK_SWARM_BASE_URL:-https://sparkswarm.com}
+      SPARK_SWARM_CLIENT_ID: ${HUMAN_INDEX_V2_SPARK_CLIENT_ID:-}
+      SPARK_SWARM_CLIENT_SECRET: ${HUMAN_INDEX_V2_SPARK_CLIENT_SECRET:-}
+      SEED_USER_SPARK_SUB: ${HUMAN_INDEX_V2_SEED_USER_SPARK_SUB:-}
     networks:
       - internal
     depends_on:
