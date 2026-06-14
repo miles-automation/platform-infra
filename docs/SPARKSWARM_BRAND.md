@@ -8,7 +8,7 @@ SparkSwarm is the shared infrastructure namespace for Rich Miles' projects. It p
 |--------|---------|---------|
 | analytics.sparkswarm.com | Umami | Privacy-focused analytics |
 | chat.sparkswarm.com | Matrix/Synapse | Operational alerting |
-| pay.sparkswarm.com | BTCPay Server | Bitcoin payments |
+| ci.sparkswarm.com | platform-ci | GitHub-Actions-free CI/CD webhook worker |
 
 ## What Projects Get
 
@@ -23,11 +23,6 @@ Projects hosted on SparkSwarm infrastructure automatically inherit:
 - Error notifications via Matrix
 - Operational alerts for rate limits, scheduler failures
 - Single ops room for all projects
-
-**Payments**
-- Bitcoin/Lightning payment processing via BTCPay
-- No payment processor intermediaries
-- Webhook integration for payment confirmation
 
 ## Projects Using SparkSwarm
 
@@ -50,7 +45,6 @@ Projects don't need to mention SparkSwarm to users. The infrastructure is invisi
 2. Add domain routing to `Caddyfile`
 3. Configure analytics: add Umami script with new website ID
 4. Configure alerting: add Matrix room/token to project config
-5. Configure payments (if needed): create BTCPay store and webhook
 
 ## Infrastructure Details
 

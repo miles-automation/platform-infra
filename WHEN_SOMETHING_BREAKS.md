@@ -167,11 +167,16 @@ If a deployment broke something:
 ### What needs immediate attention
 
 - **Site completely down** - Users can't access secrets
-- **Payment failures** - BTCPay not processing payments
 - **Data loss risk** - Postgres issues, disk full
 - **Security incidents** - Unusual access patterns, credential exposure
 
 ## CI Runners (do-1gb-runner-main)
+
+> ⚠️ **OBSOLETE as of 2026-06-14.** The droplet `167.172.224.151` was repurposed as the
+> **platform-ci** worker (resized to 2 GB; GitHub-Actions-free build+deploy on merge) — see
+> `ci/README.md` and `docs/cicd-redesign.md`. The GitHub Actions org runner below is dead and
+> not being revived (D2). The recovery steps in this section are historical; for the current
+> worker use `systemctl status platform-ci` and `/srv/platform-ci/logs/worker.log`.
 
 Self-hosted GitHub Actions runners live on a separate droplet (`167.172.224.151`), not the production platform droplet. There is one **org-level** runner — `actions.runner.miles-automation.do-1gb-org-runner` — that services every `miles-automation/*` repo via the `do-1gb-canary` label. (The older per-repo `actions.runner.richmiles-*` services from `setup-runners.sh` are obsolete.)
 
@@ -257,4 +262,3 @@ Mitigations (in increasing order of disruption):
 
 - DigitalOcean Status: https://status.digitalocean.com
 - Caddy Issues: Check https://github.com/caddyserver/caddy/issues
-- BTCPay Issues: Check https://github.com/btcpayserver/btcpayserver/issues
