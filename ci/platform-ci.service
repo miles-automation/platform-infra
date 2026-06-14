@@ -1,0 +1,19 @@
+[Unit]
+Description=platform-ci worker (GitHub-Actions-free CI/CD trigger)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Secrets + config live here (HMAC secret, GH_TOKEN, SPARK_SWARM_API_KEY, repo map). 0600, not in git.
+EnvironmentFile=/etc/platform-ci/env
+ExecStart=/usr/bin/python3 /srv/platform-ci/workspace/repos/platform-infra/ci/worker.py
+Restart=always
+RestartSec=3
+# The worker shells out to docker/git/ssh/bin/platform as root (build + prod rollout).
+User=root
+StandardOutput=append:/srv/platform-ci/logs/worker.log
+StandardError=append:/srv/platform-ci/logs/worker.log
+
+[Install]
+WantedBy=multi-user.target

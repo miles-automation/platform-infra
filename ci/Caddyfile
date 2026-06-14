@@ -1,0 +1,14 @@
+# platform-ci TLS reverse proxy (on the CI droplet, 167.172.224.151).
+# Caddy auto-provisions a Let's Encrypt cert for the domain, then proxies the webhook to the
+# local stdlib worker. DNS ci.sparkswarm.com -> this droplet must resolve first (ACME http-01).
+ci.sparkswarm.com {
+	encode gzip
+	# Only the webhook + health are exposed; everything else 404s.
+	@allowed path /webhook /healthz
+	handle @allowed {
+		reverse_proxy 127.0.0.1:8765
+	}
+	handle {
+		respond "not found" 404
+	}
+}
