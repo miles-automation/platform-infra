@@ -10,6 +10,7 @@ This repo is the source of truth for the shared production droplet (`159.65.241.
 ## How deploys work (fleet standard)
 
 - Each app service uses `image: ghcr.io/miles-automation/<app>:{${APP_IMAGE_TAG}:-latest}` (tag is pinned in `/root/platform-infra/.env`).
+- **Build the image first** with `./bin/platform build <project>` (auto-tags `sha-<short HEAD>`, builds `linux/amd64` on the active docker context's builder — NOT a QEMU/docker-container builder, which hangs on cross-builds — verifies arch, pushes to ghcr). Use `./bin/platform build <project> --rollout --yes` to build **and** deploy in one step. (Auto-build-on-merge needs the `platform-ci` droplet — see `docs/cicd-redesign.md`; until then, build is this manual command.)
 - App repos promote changes via `./bin/platform prod rollout <project> --tag sha-<short> --yes`, which:
   - Sets `<APP>_IMAGE_TAG=sha-...` in `/root/platform-infra/.env`
   - `docker compose pull <service>`

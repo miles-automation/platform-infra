@@ -231,6 +231,13 @@ already GHA-free):
   status, no GHA. *(This is the MVP — C1+C2 replace `ci.yml` for one repo.)*
 - **C3 — `build` action.** On merge to the default branch (or a tag): `docker build` →
   push ghcr `sha-<short>`, record the image. **Done:** merging v2 main yields a pushed image.
+  - **Local build command shipped (2026-06-14):** `bin/platform build <project> [--tag] [--rollout]`
+    resolves `ghcr_image`/`repo_dir` from `platform.toml`, builds `linux/amd64` on the
+    **docker-driver builder for the active docker context** (NOT a docker-container/QEMU builder —
+    that hangs indefinitely on this stack's cross-build, observed ~80min/zero-output), verifies the
+    image arch, pushes to ghcr, and with `--rollout` chains into `prod rollout`. This is the
+    worker's `build` step, runnable by hand today; the webhook trigger (C1–C2) still needs the CI
+    droplet. Until then, deploy = `bin/platform build <project> --rollout --yes`.
 - **C4 — `deploy` action.** Human-gated trigger (a `/deploy` comment, a tag, or `bin/platform ci
   deploy`) → worker runs `bin/platform prod rollout <project> --tag sha-<short>` (health-check +
   rollback already built in). **Done:** a v2 deploy runs end-to-end through the worker.
