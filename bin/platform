@@ -1556,6 +1556,159 @@ PY
         _eprint(f"ok: tarball deploy complete for {service} (no health check — provide --health-domain or configure domains)")
 
 
+def _git_short_sha(repo_dir: Path, *, dry_run: bool, quiet: bool) -> str:
+    out = sh_capture(
+        ["git", "-C", str(repo_dir), "rev-parse", "--short", "HEAD"],
+        cwd=None,
+        dry_run=dry_run,
+        quiet=quiet,
+        check=False,
+    )
+    return out.strip()
+
+
+def cmd_build(args: argparse.Namespace) -> None:
+    """Build a project's image for prod (linux/amd64) and push to ghcr; optionally roll it out.
+
+    The fleet had no `build` action, so building an image was an undocumented manual step — and
+    the obvious `docker buildx build` lands on whatever buildx builder is *current*, which on a
+    dev box is often a docker-container/QEMU builder. A QEMU cross-build of this stack HANGS
+    indefinitely at the export step (observed 2026-06-14, ~80min, zero output). This command
+    pins the engine's `default` builder (docker driver — Rosetta/native, no QEMU), builds,
+    --loads, verifies the arch, then pushes. With --rollout it chains into `prod rollout`
+    (health-check + auto-rollback). Mirrors CI/CD redesign §5/§9 `build` (docs/cicd-redesign.md).
+    """
+    cfg = args.cfg
+    ws = args.workspace_root
+    project_key = args.project
+    proj = project_cfg(cfg, project_key)  # raises KeyError on unknown project
+
+    image_name = args.image or proj.get("ghcr_image")
+    if not isinstance(image_name, str) or not image_name:
+        raise SystemExit(f"Project {project_key!r} has no ghcr_image in platform.toml (pass --image)")
+
+    build_context = Path(args.context).resolve() if args.context else resolve_repo_dir(ws, proj)
+    if not build_context.is_dir():
+        raise SystemExit(f"Build context not found: {build_context}")
+
+    # The non-QEMU builder is the docker-driver builder for the ACTIVE docker context (buildx
+    # names it after the context: orbstack / desktop-linux / default). The *selected* default
+    # builder is often a docker-container/QEMU builder, which is the one that hangs — so resolve
+    # the context-named builder explicitly rather than relying on the current selection.
+    builder = args.builder
+    if not builder:
+        builder = (
+            sh_capture(["docker", "context", "show"], cwd=None, dry_run=False, quiet=True, check=False).strip()
+            or "default"
+        )
+
+    tag = args.tag
+    if not tag:
+        short = _git_short_sha(build_context, dry_run=args.dry_run, quiet=args.quiet)
+        if not short:
+            if args.dry_run:
+                short = "DRYRUN"
+            else:
+                raise SystemExit(f"Could not resolve a git short sha in {build_context}; pass --tag")
+        tag = f"sha-{short}"
+    full_image = f"{image_name}:{tag}"
+
+    # ghcr login (best effort): token from GH_TOKEN (set by the ./bin/platform gh/agent
+    # launchers) or `gh auth token`. The token is piped via stdin and never printed.
+    if not args.no_login and not args.no_push and not args.dry_run:
+        token = os.environ.get("GH_TOKEN", "").strip()
+        if not token:
+            token = sh_capture(
+                ["gh", "auth", "token"], cwd=None, dry_run=False, quiet=True, check=False
+            ).strip()
+        if token:
+            registry = image_name.split("/", 1)[0]  # e.g. ghcr.io
+            if not args.quiet:
+                _eprint(f"==> docker login {registry} as {args.login_user}")
+            login = subprocess.run(
+                ["docker", "login", registry, "-u", args.login_user, "--password-stdin"],
+                input=token,
+                text=True,
+                capture_output=True,
+            )
+            if login.returncode != 0:
+                raise SystemExit(f"docker login failed: {login.stderr.strip()}")
+        elif not args.quiet:
+            _eprint("    no GH_TOKEN / gh token found; assuming docker is already logged in")
+
+    # Build on a NON-QEMU builder and load into local docker. The docker-driver builder can't
+    # --push directly, so we --load then `docker push` — which is also the path proven to work.
+    if not args.quiet:
+        _eprint(f"==> Build {full_image} (platform={args.platform}, builder={builder})")
+    sh(
+        [
+            "docker",
+            "buildx",
+            "build",
+            "--builder",
+            builder,
+            "--platform",
+            args.platform,
+            "--progress=plain",
+            "-t",
+            full_image,
+            "--load",
+            ".",
+        ],
+        cwd=build_context,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
+
+    # Verify the built image's arch matches the target before pushing — a silent wrong-arch
+    # image is the deploy footgun the v2 lessons call out (identity-aware verification).
+    if not args.dry_run:
+        got = sh_capture(
+            ["docker", "image", "inspect", full_image, "--format", "{{.Os}}/{{.Architecture}}"],
+            cwd=None,
+            dry_run=False,
+            quiet=True,
+        ).strip()
+        if got != args.platform:
+            raise SystemExit(
+                f"Built image arch {got!r} != target {args.platform!r}; refusing to push {full_image}"
+            )
+        if not args.quiet:
+            _eprint(f"    arch verified: {got}")
+
+    if not args.no_push:
+        if not args.quiet:
+            _eprint(f"==> Push {full_image}")
+        sh(["docker", "push", full_image], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
+
+    if not args.quiet:
+        _eprint(f"ok: {full_image} {'built (not pushed)' if args.no_push else 'pushed'}")
+
+    if args.rollout:
+        if args.no_push:
+            raise SystemExit("--rollout requires a pushed image; drop --no-push")
+        rollout_args = argparse.Namespace(
+            workspace_root=ws,
+            cfg=cfg,
+            config=args.config,
+            passthrough=[],
+            dry_run=args.dry_run,
+            quiet=args.quiet,
+            target=project_key,
+            tag=tag,
+            yes=args.yes,
+            apply_secrets=args.apply_secrets,
+            secrets_env=args.secrets_env,
+            no_migrate=args.no_migrate,
+            no_rollback=args.no_rollback,
+            health_domain=args.health_domain,
+            health_path=args.health_path,
+            health_retries=args.health_retries,
+            health_delay_seconds=args.health_delay_seconds,
+        )
+        cmd_prod_rollout(rollout_args)
+
+
 def cmd_prod_caddy_restart(args: argparse.Namespace) -> None:
     require_yes(args, "restart caddy on prod")
     if not args.really:
@@ -2298,6 +2451,37 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--target", default="check", help="Make target to run (default: check)")
     check.add_argument("--wt", help="Worktree topic to run against")
     check.set_defaults(func=cmd_check)
+
+    build = sub.add_parser(
+        "build",
+        help="Build a project image for prod (linux/amd64) and push to ghcr (--rollout to deploy)",
+        parents=[common],
+    )
+    build.add_argument("project", help="Project key (uses ghcr_image + repo_dir from platform.toml)")
+    build.add_argument("--tag", help="Image tag (default: sha-<short HEAD of the build context>)")
+    build.add_argument("--image", help="Override full image name (default: ghcr_image from platform.toml)")
+    build.add_argument("--context", help="Override Docker build context dir (default: project repo_dir)")
+    build.add_argument(
+        "--builder",
+        default=None,
+        help="buildx builder to use (default: the docker-driver builder for the active docker context; AVOID docker-container/QEMU builders, they hang on cross-arch builds)",
+    )
+    build.add_argument("--platform", default="linux/amd64", help="Target platform (default: linux/amd64)")
+    build.add_argument("--no-push", action="store_true", help="Build + load locally only; do not push to ghcr")
+    build.add_argument("--no-login", action="store_true", help="Skip docker login (assume already authenticated)")
+    build.add_argument("--login-user", default="milesautomation-claude", help="Username for ghcr docker login")
+    build.add_argument("--rollout", action="store_true", help="After pushing, run 'prod rollout' for this project at the built tag")
+    # Passthrough to 'prod rollout' when --rollout is set (defaults mirror the rollout parser).
+    build.add_argument("--yes", action="store_true", help="(with --rollout) confirm the prod rollout")
+    build.add_argument("--apply-secrets", action="store_true", help="(with --rollout) apply secrets first")
+    build.add_argument("--secrets-env", default="production", help="(with --rollout) secrets environment")
+    build.add_argument("--no-migrate", action="store_true", help="(with --rollout) skip migrations")
+    build.add_argument("--no-rollback", action="store_true", help="(with --rollout) do not rollback on health failure")
+    build.add_argument("--health-domain", help="(with --rollout) Host header domain (default: first project domain)")
+    build.add_argument("--health-path", default="/healthz", help="(with --rollout) health path (default: /healthz)")
+    build.add_argument("--health-retries", type=int, default=45, help="(with --rollout) health retries")
+    build.add_argument("--health-delay-seconds", type=float, default=2.0, help="(with --rollout) delay between retries")
+    build.set_defaults(func=cmd_build)
 
     infra = sub.add_parser("infra", help="Local platform-infra docker compose wrappers", parents=[common])
     infra_sub = infra.add_subparsers(dest="infra_cmd", required=True)
