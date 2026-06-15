@@ -43,28 +43,6 @@ services:
       retries: 3
 
   # Shared Postgres database
-  postgres:
-    image: postgres:18-alpine
-    restart: unless-stopped
-    mem_limit: 384m
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: postgres
-    volumes:
-      # PG18+ official image stores the cluster in a version-specific subdir
-      # (/var/lib/postgresql/18/docker); the volume MUST mount at
-      # /var/lib/postgresql (not /.../data as in <=16). See docker-library/postgres#37.
-      - postgres_data:/var/lib/postgresql
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
-    networks:
-      - internal
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
   # IEOMD - App (FastAPI + built SPA)
   ieomd:
     image: ghcr.io/miles-automation/ieomd-app:${IEOMD_IMAGE_TAG:-latest}
@@ -92,9 +70,6 @@ services:
       BTCPAY_WEBHOOK_SECRET: ${BTCPAY_WEBHOOK_SECRET:-}
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # For Whenever - private messages and files for later
   for-whenever:
@@ -121,9 +96,6 @@ services:
       STRIPE_WEBHOOK_SECRET: ${FOR_WHENEVER_STRIPE_WEBHOOK_SECRET:-${STRIPE_WEBHOOK_SECRET:-}}
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # Umami - Privacy-focused analytics
   umami:
@@ -135,9 +107,6 @@ services:
       APP_SECRET: ${UMAMI_APP_SECRET:?Set UMAMI_APP_SECRET in .env}
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # Matrix/Synapse - SparkSwarm ops chat
   synapse:
@@ -159,9 +128,6 @@ services:
       - synapse_data:/data
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # Noodle - Bar rating app
   noodle:
@@ -173,9 +139,6 @@ services:
       ENVIRONMENT: production
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # Human Index - private recall utility (FastAPI + static frontend)
   human-index:
@@ -217,9 +180,6 @@ services:
       - human_index_data:/app/backend/data
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # Human Index v2 - fresh-DB rebuild (FastAPI + built SPA). Takes over humanindex.io;
   # the legacy human-index service stays defined but dormant (unrouted).
@@ -238,9 +198,6 @@ services:
       SEED_USER_SPARK_SUB: ${HUMAN_INDEX_V2_SEED_USER_SPARK_SUB:-}
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # Esher's Codex - Math curriculum app
   eshers-codex:
@@ -261,9 +218,6 @@ services:
       ADMIN_EMAILS: ${ESHERS_CODEX_ADMIN_EMAILS:-}
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # richmiles.xyz - Static resume site
   richmiles-xyz:
@@ -368,9 +322,6 @@ services:
       - uptime_state:/data/uptime:ro
     networks:
       - internal
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   # Fleet uptime prober (logs Spark Swarm events + Matrix alerts)
   uptime-prober:
@@ -438,8 +389,6 @@ services:
     networks:
       - internal
     depends_on:
-      postgres:
-        condition: service_healthy
       spark-swarm:
         condition: service_started
 
