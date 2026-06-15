@@ -71,7 +71,7 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     environment:
-      DATABASE_URL: postgresql+psycopg2://${IEOMD_DB_USER:-ieomd}:${IEOMD_DB_PASSWORD:?Set IEOMD_DB_PASSWORD in .env}@postgres:5432/${IEOMD_DB_NAME:-ieomd_db}
+      DATABASE_URL: postgresql+psycopg2://${IEOMD_DB_USER:-ieomd}:${IEOMD_DB_PASSWORD:?Set IEOMD_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${IEOMD_DB_NAME:-ieomd_db}
       CORS_ORIGINS: ${IEOMD_CORS_ORIGINS:-["https://ieomd.com"]}
       # Object Storage (shared bucket with project prefix)
       # Prefer IEOMD_OBJECT_STORAGE_ENABLED; OBJECT_STORAGE_ENABLED is supported for backward compatibility.
@@ -102,7 +102,7 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     environment:
-      DATABASE_URL: postgresql+psycopg2://${FOR_WHENEVER_DB_USER:-for_whenever}:${FOR_WHENEVER_DB_PASSWORD:?Set FOR_WHENEVER_DB_PASSWORD in .env}@postgres:5432/${FOR_WHENEVER_DB_NAME:-for_whenever_db}
+      DATABASE_URL: postgresql+psycopg2://${FOR_WHENEVER_DB_USER:-for_whenever}:${FOR_WHENEVER_DB_PASSWORD:?Set FOR_WHENEVER_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${FOR_WHENEVER_DB_NAME:-for_whenever_db}
       CORS_ORIGINS: ${FOR_WHENEVER_CORS_ORIGINS:-["https://forwhenever.com"]}
       OBJECT_STORAGE_ENABLED: ${FOR_WHENEVER_OBJECT_STORAGE_ENABLED:-${OBJECT_STORAGE_ENABLED:-false}}
       OBJECT_STORAGE_ENDPOINT: https://nyc3.digitaloceanspaces.com
@@ -131,7 +131,7 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     environment:
-      DATABASE_URL: postgresql://${UMAMI_DB_USER:-umami}:${UMAMI_DB_PASSWORD:?Set UMAMI_DB_PASSWORD in .env}@postgres:5432/${UMAMI_DB_NAME:-umami_db}
+      DATABASE_URL: postgresql://${UMAMI_DB_USER:-umami}:${UMAMI_DB_PASSWORD:?Set UMAMI_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${UMAMI_DB_NAME:-umami_db}
       APP_SECRET: ${UMAMI_APP_SECRET:?Set UMAMI_APP_SECRET in .env}
     networks:
       - internal
@@ -150,7 +150,7 @@ services:
       SYNAPSE_NO_TLS: "yes"
       SYNAPSE_ENABLE_REGISTRATION: "no"
       SYNAPSE_LOG_LEVEL: WARNING
-      POSTGRES_HOST: postgres
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${SYNAPSE_DB_NAME:-synapse_db}
       POSTGRES_USER: ${SYNAPSE_DB_USER:-synapse}
@@ -169,7 +169,7 @@ services:
     restart: unless-stopped
     mem_limit: 192m
     environment:
-      DATABASE_URL: postgresql+psycopg2://${NOODLE_DB_USER:-noodle}:${NOODLE_DB_PASSWORD:?Set NOODLE_DB_PASSWORD in .env}@postgres:5432/${NOODLE_DB_NAME:-noodle_db}
+      DATABASE_URL: postgresql+psycopg2://${NOODLE_DB_USER:-noodle}:${NOODLE_DB_PASSWORD:?Set NOODLE_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${NOODLE_DB_NAME:-noodle_db}
       ENVIRONMENT: production
     networks:
       - internal
@@ -183,7 +183,7 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     environment:
-      DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_DB_USER:-human_index}:${HUMAN_INDEX_DB_PASSWORD:?Set HUMAN_INDEX_DB_PASSWORD in .env}@postgres:5432/${HUMAN_INDEX_DB_NAME:-human_index_db}
+      DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_DB_USER:-human_index}:${HUMAN_INDEX_DB_PASSWORD:?Set HUMAN_INDEX_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${HUMAN_INDEX_DB_NAME:-human_index_db}
       CORS_ORIGINS: ${HUMAN_INDEX_CORS_ORIGINS:-["https://humanindex.io"]}
       ENVIRONMENT: ${HUMAN_INDEX_ENVIRONMENT:-production}
       PUBLIC_BASE_URL: ${HUMAN_INDEX_PUBLIC_BASE_URL:-https://humanindex.io}
@@ -228,8 +228,14 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     environment:
-      DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_V2_DB_USER:-human_index_v2}:${HUMAN_INDEX_V2_DB_PASSWORD:?Set HUMAN_INDEX_V2_DB_PASSWORD in .env}@postgres:5432/${HUMAN_INDEX_V2_DB_NAME:-human_index_v2}
+      DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_V2_DB_USER:-human_index_v2}:${HUMAN_INDEX_V2_DB_PASSWORD:?Set HUMAN_INDEX_V2_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${HUMAN_INDEX_V2_DB_NAME:-human_index_v2}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Spark Swarm OAuth (authed iMessage ingest). Empty client creds / seed-sub leave ingest
+      # fail-closed (503/403); the digest + comment SPA endpoints are unaffected.
+      SPARK_SWARM_BASE_URL: ${SPARK_SWARM_BASE_URL:-https://sparkswarm.com}
+      SPARK_SWARM_CLIENT_ID: ${HUMAN_INDEX_V2_SPARK_CLIENT_ID:-}
+      SPARK_SWARM_CLIENT_SECRET: ${HUMAN_INDEX_V2_SPARK_CLIENT_SECRET:-}
+      SEED_USER_SPARK_SUB: ${HUMAN_INDEX_V2_SEED_USER_SPARK_SUB:-}
     networks:
       - internal
     depends_on:
@@ -242,7 +248,7 @@ services:
     restart: unless-stopped
     mem_limit: 192m
     environment:
-      DATABASE_URL: postgresql+psycopg://${ESHERS_CODEX_DB_USER:-eshers_codex}:${ESHERS_CODEX_DB_PASSWORD:?Set ESHERS_CODEX_DB_PASSWORD in .env}@postgres:5432/${ESHERS_CODEX_DB_NAME:-eshers_codex_db}
+      DATABASE_URL: postgresql+psycopg://${ESHERS_CODEX_DB_USER:-eshers_codex}:${ESHERS_CODEX_DB_PASSWORD:?Set ESHERS_CODEX_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${ESHERS_CODEX_DB_NAME:-eshers_codex_db}
       ENVIRONMENT: production
       CONTENT_DIR: /app/content
       CORS_ORIGINS: https://esherscodex.com
@@ -299,13 +305,13 @@ services:
     restart: unless-stopped
     mem_limit: 512m
     environment:
-      DATABASE_URL: postgresql://${SPARK_SWARM_DB_USER:-spark_swarm}:${SPARK_SWARM_DB_PASSWORD:?Set SPARK_SWARM_DB_PASSWORD in .env}@postgres:5432/${SPARK_SWARM_DB_NAME:-spark_swarm_db}
+      DATABASE_URL: postgresql://${SPARK_SWARM_DB_USER:-spark_swarm}:${SPARK_SWARM_DB_PASSWORD:?Set SPARK_SWARM_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${SPARK_SWARM_DB_NAME:-spark_swarm_db}
       AUTO_CREATE_TABLES: "true"
       SPARK_SWARM_MASTER_KEY: ${SPARK_SWARM_MASTER_KEY:?Set SPARK_SWARM_MASTER_KEY in .env}
       SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY:?Set SPARK_SWARM_API_KEY in .env}
       SPARK_SWARM_AUTH_DISABLED: ${SPARK_SWARM_AUTH_DISABLED:-false}
       CANVAS_API_KEY: ${CANVAS_API_KEY:-}
-      UMAMI_DATABASE_URL: postgresql://${UMAMI_DB_USER:-umami}:${UMAMI_DB_PASSWORD:?Set UMAMI_DB_PASSWORD in .env}@postgres:5432/${UMAMI_DB_NAME:-umami_db}
+      UMAMI_DATABASE_URL: postgresql://${UMAMI_DB_USER:-umami}:${UMAMI_DB_PASSWORD:?Set UMAMI_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${UMAMI_DB_NAME:-umami_db}
       UPTIME_STATE_PATH: /data/uptime/state.json
       MATRIX_HOMESERVER_URL: ${MATRIX_HOMESERVER_URL:-}
       MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
@@ -424,7 +430,7 @@ services:
     mem_limit: 192m
     command: ["python", "-m", "app.lead_scheduler"]
     environment:
-      DATABASE_URL: postgresql://${SPARK_SWARM_DB_USER:-spark_swarm}:${SPARK_SWARM_DB_PASSWORD:?Set SPARK_SWARM_DB_PASSWORD in .env}@postgres:5432/${SPARK_SWARM_DB_NAME:-spark_swarm_db}
+      DATABASE_URL: postgresql://${SPARK_SWARM_DB_USER:-spark_swarm}:${SPARK_SWARM_DB_PASSWORD:?Set SPARK_SWARM_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${SPARK_SWARM_DB_NAME:-spark_swarm_db}
       LEADS_WORKER_INTERVAL_SECONDS: ${LEADS_WORKER_INTERVAL_SECONDS:-300}
       MATRIX_HOMESERVER_URL: ${MATRIX_HOMESERVER_URL:-}
       MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
