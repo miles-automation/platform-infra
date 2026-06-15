@@ -45,9 +45,15 @@ HEALTH_MAX_AGE_HOURS="${DB_BACKUP_HEALTH_MAX_AGE_HOURS:-25}"
 STATE_FILE="${BACKUP_DIR}/backup_state.env"
 DATABASE_USER="${DB_BACKUP_DATABASE_USER:-${POSTGRES_USER:-postgres}}"
 
-# All databases to back up (derived from init-db.sql).
-# Override with DB_BACKUP_DATABASES (comma-separated) if needed.
-DEFAULT_DATABASES="ieomd_db,umami_db,synapse_db,human_index_db,spark_swarm_db,eshers_codex_db,noodle_db"
+# Postgres now lives on the dedicated platform-db droplet (VPC private IP), not the local
+# compose container — so we dump OVER THE NETWORK with a throwaway pg client container (version
+# pinned to match the server). DB_HOST defaults to platform-db's private IP.
+DB_HOST="${DB_BACKUP_DB_HOST:-10.108.0.5}"
+DB_PORT="${DB_BACKUP_DB_PORT:-5432}"
+PG_CLIENT_IMAGE="${DB_BACKUP_PG_CLIENT_IMAGE:-postgres:18-alpine}"
+
+# All databases to back up. Override with DB_BACKUP_DATABASES (comma-separated) if needed.
+DEFAULT_DATABASES="ieomd_db,for_whenever_db,umami_db,synapse_db,human_index_db,human_index_v2,spark_swarm_db,eshers_codex_db,noodle_db"
 IFS=',' read -ra DATABASES <<< "${DB_BACKUP_DATABASES:-$DEFAULT_DATABASES}"
 
 MATRIX_HOMESERVER_URL="${MATRIX_HOMESERVER_URL:-}"
@@ -211,12 +217,11 @@ backup_single_db() {
   local local_path="${BACKUP_DIR}/${filename}"
   local object_key="${SPACES_PREFIX%/}/${filename}"
 
-  log "starting backup for database=${db_name}"
-  if ! (
-    cd "$COMPOSE_DIR"
-    docker compose -f "$COMPOSE_FILE" exec -T postgres \
-      pg_dump -U "$DATABASE_USER" --no-owner --no-privileges "$db_name"
-  ) | gzip -c >"$tmp_path"; then
+  log "starting backup for database=${db_name} (host=${DB_HOST})"
+  if ! docker run --rm -e PGPASSWORD="${POSTGRES_PASSWORD:-}" "$PG_CLIENT_IMAGE" \
+      pg_dump -h "$DB_HOST" -p "$DB_PORT" -U "$DATABASE_USER" \
+      --no-owner --no-privileges "$db_name" \
+      | gzip -c >"$tmp_path"; then
     rm -f "$tmp_path"
     log "pg_dump failed for ${db_name}"
     send_matrix_alert "DB backup failed: pg_dump failed for ${db_name}."
@@ -245,6 +250,10 @@ run_backup() {
 
   if [[ -z "$SPACES_BUCKET" || -z "$AWS_ACCESS_KEY_ID" || -z "$AWS_SECRET_ACCESS_KEY" ]]; then
     log "SPACES_BUCKET, SPACES_ACCESS_KEY, and SPACES_SECRET_KEY must be set"
+    exit 1
+  fi
+  if [[ -z "${POSTGRES_PASSWORD:-}" ]]; then
+    log "POSTGRES_PASSWORD must be set (network dump from ${DB_HOST} needs it)"
     exit 1
   fi
 
