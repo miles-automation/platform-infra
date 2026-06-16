@@ -186,7 +186,9 @@ services:
   human-index-v2:
     image: ghcr.io/miles-automation/human-index-v2-app:${HUMAN_INDEX_V2_IMAGE_TAG:-latest}
     restart: unless-stopped
-    mem_limit: 256m
+    # 512m (was 256m): the blob proxy reads attachment bytes into memory to stream them, and
+    # boto3's footprint is non-trivial — headroom for image upload/serve.
+    mem_limit: 512m
     environment:
       DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_V2_DB_USER:-human_index_v2}:${HUMAN_INDEX_V2_DB_PASSWORD:?Set HUMAN_INDEX_V2_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${HUMAN_INDEX_V2_DB_NAME:-human_index_v2}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -196,6 +198,14 @@ services:
       SPARK_SWARM_CLIENT_ID: ${HUMAN_INDEX_V2_SPARK_CLIENT_ID:-}
       SPARK_SWARM_CLIENT_SECRET: ${HUMAN_INDEX_V2_SPARK_CLIENT_SECRET:-}
       SEED_USER_SPARK_SUB: ${HUMAN_INDEX_V2_SEED_USER_SPARK_SUB:-}
+      # DO Spaces blob storage for image attachments (shared platform creds; v2 namespaces its
+      # objects under the key prefix). Empty creds leave the blob endpoints returning 503.
+      SPACES_ENDPOINT: ${SPACES_ENDPOINT:-https://nyc3.digitaloceanspaces.com}
+      SPACES_REGION: ${SPACES_REGION:-nyc3}
+      SPACES_BUCKET: ${SPACES_BUCKET:-}
+      SPACES_ACCESS_KEY: ${SPACES_ACCESS_KEY:-}
+      SPACES_SECRET_KEY: ${SPACES_SECRET_KEY:-}
+      SPACES_KEY_PREFIX: ${HUMAN_INDEX_V2_SPACES_KEY_PREFIX:-human-index-v2}
     networks:
       - internal
 
