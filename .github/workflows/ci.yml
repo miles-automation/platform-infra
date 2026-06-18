@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner_target:
+        description: "Runner target for manual runs"
+        required: true
+        type: choice
+        default: "ubuntu-latest"
+        options:
+          - self-hosted-canary
+          - ubuntu-latest
+
+jobs:
+  check:
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_target == 'self-hosted-canary' && '["self-hosted","linux","x64","do-1gb-canary"]' || '"ubuntu-latest"') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Synthesize .env for compose validation
+        run: |
+          # docker compose config rejects ${VAR} interpolations without a value,
+          # and .env.example drifts behind docker-compose.yml. Generate a stub
+          # value for every ${VAR} referenced by compose so syntax can be checked.
+          grep -oE '\$\{[A-Z_][A-Z_0-9]*' docker-compose.yml \
+            | sort -u \
+            | tr -d '${' \
+            | awk '{print $1"=ci"}' > .env
+
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config --quiet
+
+      - name: Validate Caddyfile
+        run: |
+          docker run --rm \
+            -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine \
+            caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+      - name: Shellcheck scripts
+        run: shellcheck --severity=error setup.sh scripts/*.sh
