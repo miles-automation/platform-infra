@@ -192,12 +192,22 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_V2_DB_USER:-human_index_v2}:${HUMAN_INDEX_V2_DB_PASSWORD:?Set HUMAN_INDEX_V2_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${HUMAN_INDEX_V2_DB_NAME:-human_index_v2}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Spark Swarm OAuth (authed iMessage ingest). Empty client creds / seed-sub leave ingest
-      # fail-closed (503/403); the digest + comment SPA endpoints are unaffected.
+      # Spark Swarm OAuth — the SAME client serves both the authed iMessage-ingest introspection
+      # AND the browser SPA login (authorization-code flow). Empty client creds / seed-sub leave
+      # ingest + login fail-closed (503/403/401). The browser login needs PUBLIC_BASE_URL set so
+      # the OAuth redirect_uri resolves to the real origin; that exact callback
+      # (<PUBLIC_BASE_URL>/api/v1/auth/callback) must be in the client's redirect_uris in Spark Swarm.
       SPARK_SWARM_BASE_URL: ${SPARK_SWARM_BASE_URL:-https://sparkswarm.com}
+      # Ingest / resource-server client (machine Bearer tokens from the Swift connector).
       SPARK_SWARM_CLIENT_ID: ${HUMAN_INDEX_V2_SPARK_CLIENT_ID:-}
       SPARK_SWARM_CLIENT_SECRET: ${HUMAN_INDEX_V2_SPARK_CLIENT_SECRET:-}
       SEED_USER_SPARK_SUB: ${HUMAN_INDEX_V2_SEED_USER_SPARK_SUB:-}
+      PUBLIC_BASE_URL: ${HUMAN_INDEX_V2_PUBLIC_BASE_URL:-https://humanindex.io}
+      # Browser SESSION client (the SPA login + cookie introspection) — a DISTINCT client from
+      # ingest because Spark Swarm introspection is client-scoped. Its redirect_uris must contain
+      # <PUBLIC_BASE_URL>/api/v1/auth/callback. Empty leaves browser login fail-closed (503).
+      SPARK_SWARM_OAUTH_CLIENT_ID: ${HUMAN_INDEX_V2_SPARK_OAUTH_CLIENT_ID:-}
+      SPARK_SWARM_OAUTH_CLIENT_SECRET: ${HUMAN_INDEX_V2_SPARK_OAUTH_CLIENT_SECRET:-}
       # DO Spaces blob storage for image attachments (shared platform creds; v2 namespaces its
       # objects under the key prefix). Empty creds leave the blob endpoints returning 503.
       SPACES_ENDPOINT: ${SPACES_ENDPOINT:-https://nyc3.digitaloceanspaces.com}
