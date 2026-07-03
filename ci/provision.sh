@@ -13,10 +13,19 @@ echo "==> dirs"
 mkdir -p "$WORKSPACE/repos" /srv/platform-ci/logs /etc/platform-ci
 chmod 700 /etc/platform-ci
 
-echo "==> apt deps (git curl ca-certificates jq nodejs npm)"
+echo "==> apt deps (git curl ca-certificates jq)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq git curl ca-certificates jq nodejs npm >/dev/null
+apt-get install -y -qq git curl ca-certificates jq >/dev/null
+
+echo "==> node 22 (NodeSource — apt's node 18 + global eslint 6 predate what the fleet's frontends pin)"
+# The apt eslint package drops an eslint 6.x on PATH that a dep-less `npm run lint` silently
+# resolves; purge it (and apt's node/npm, which NodeSource replaces).
+apt-get purge -y -qq eslint >/dev/null 2>&1 || true
+if ! node --version 2>/dev/null | grep -Eq '^v(2[2-9]|[3-9][0-9])\.'; then
+	curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+	apt-get install -y -qq nodejs >/dev/null
+fi
 
 echo "==> uv (for 'make check' / app builds)"
 if ! command -v uv >/dev/null 2>&1; then

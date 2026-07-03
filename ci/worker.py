@@ -102,8 +102,11 @@ def _run(cmd: list[str], cwd: str | None, logfile: str, extra_env: dict | None =
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
+    shown = " ".join(cmd)
+    if GITHUB_TOKEN:
+        shown = shown.replace(GITHUB_TOKEN, "***")
     with open(logfile, "ab", buffering=0) as fh:
-        fh.write(f"\n$ {' '.join(cmd)}\n".encode())
+        fh.write(f"\n$ {shown}\n".encode())
         proc = subprocess.run(cmd, cwd=cwd, env=env, stdout=fh, stderr=subprocess.STDOUT)
     return proc.returncode
 
@@ -127,12 +130,31 @@ def _checkout(project: str, repo: str, sha: str, logfile: str) -> str:
     return path
 
 
+def _install_node_deps(path: str, logfile: str) -> None:
+    """`git clean -fdx` wipes node_modules every run, and a bare `npm run lint` with no local
+    install silently resolves whatever ancient global eslint the box has (apt shipped 6.x).
+    Install the repo-pinned deps for the root and any first-level package dir (e.g. frontend/)."""
+    subdirs = [
+        os.path.join(path, d)
+        for d in sorted(os.listdir(path))
+        if os.path.isdir(os.path.join(path, d)) and not d.startswith(".")
+    ]
+    for pkg_dir in [path, *subdirs]:
+        if not os.path.isfile(os.path.join(pkg_dir, "package.json")):
+            continue
+        has_lock = os.path.isfile(os.path.join(pkg_dir, "package-lock.json"))
+        cmd = ["npm", "ci" if has_lock else "install", "--no-audit", "--no-fund"]
+        if _run(cmd, cwd=pkg_dir, logfile=logfile) != 0:
+            raise RuntimeError(f"npm install failed in {os.path.relpath(pkg_dir, path)}")
+
+
 def do_check(job: dict) -> None:
     repo, sha, project = job["repo"], job["sha"], job["project"]
     logfile = os.path.join(LOG_DIR, f"check-{project}-{sha[:7]}.log")
     set_status(repo, sha, "pending", "platform-ci: running make check")
     try:
-        _checkout(project, repo, sha, logfile)
+        path = _checkout(project, repo, sha, logfile)
+        _install_node_deps(path, logfile)
         rc = _run([PLATFORM_BIN, "check", project], cwd=WORKSPACE, logfile=logfile)
     except Exception as e:  # noqa: BLE001
         log(f"check error {project}@{sha[:7]}: {e}")
