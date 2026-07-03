@@ -148,6 +148,26 @@ def _install_node_deps(path: str, logfile: str) -> None:
             raise RuntimeError(f"npm install failed in {os.path.relpath(pkg_dir, path)}")
 
 
+def _maybe_db_up(path: str, logfile: str) -> None:
+    """App test suites gate DB tests on a reachable dev Postgres and (per conftest) must NOT
+    silently skip them when CI is set — so bring up the repo's own compose postgres service if
+    it defines one. The container + named volume persist across checks; --wait blocks on its
+    healthcheck. NB: dev compose files map host port 5432, so registering a second repo with
+    its own postgres service would collide — revisit then."""
+    compose = os.path.join(path, "docker-compose.yml")
+    if not os.path.isfile(compose):
+        return
+    probe = subprocess.run(
+        ["docker", "compose", "-f", compose, "config", "--services"],
+        cwd=path, capture_output=True, text=True,
+    )
+    if probe.returncode != 0 or "postgres" not in probe.stdout.split():
+        return
+    if _run(["docker", "compose", "-f", compose, "up", "-d", "--wait", "postgres"],
+            cwd=path, logfile=logfile) != 0:
+        raise RuntimeError("dev postgres failed to start")
+
+
 def do_check(job: dict) -> None:
     repo, sha, project = job["repo"], job["sha"], job["project"]
     logfile = os.path.join(LOG_DIR, f"check-{project}-{sha[:7]}.log")
@@ -155,7 +175,9 @@ def do_check(job: dict) -> None:
     try:
         path = _checkout(project, repo, sha, logfile)
         _install_node_deps(path, logfile)
-        rc = _run([PLATFORM_BIN, "check", project], cwd=WORKSPACE, logfile=logfile)
+        _maybe_db_up(path, logfile)
+        rc = _run([PLATFORM_BIN, "check", project], cwd=WORKSPACE, logfile=logfile,
+                  extra_env={"CI": "1"})
     except Exception as e:  # noqa: BLE001
         log(f"check error {project}@{sha[:7]}: {e}")
         set_status(repo, sha, "error", f"platform-ci error: {e}")

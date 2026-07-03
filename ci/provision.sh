@@ -16,7 +16,7 @@ chmod 700 /etc/platform-ci
 echo "==> apt deps (git curl ca-certificates jq)"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq git curl ca-certificates jq >/dev/null
+apt-get install -y -qq git curl ca-certificates jq docker-compose-v2 >/dev/null
 
 echo "==> node 22 (NodeSource — apt's node 18 + global eslint 6 predate what the fleet's frontends pin)"
 # The apt eslint package drops an eslint 6.x on PATH that a dep-less `npm run lint` silently
