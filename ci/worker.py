@@ -112,8 +112,14 @@ def _run(cmd: list[str], cwd: str | None, logfile: str, extra_env: dict | None =
 
 
 def _checkout(project: str, repo: str, sha: str, logfile: str) -> str:
-    """Ensure repos/<project> is a clone of `repo`, fetched and checked out at `sha`. Returns path."""
-    path = os.path.join(REPOS_DIR, project)
+    """Ensure the repo is cloned, fetched and checked out at `sha`. Returns path.
+
+    Clone into repos/<repo-basename>, NOT repos/<project>: `bin/platform build`
+    resolves the build context from platform.toml's `repo_dir` (e.g.
+    repos/richmiles.xyz), whose basename is the GitHub repo name, not the
+    project key (richmiles-xyz). Using the project key breaks any repo whose
+    name differs from its key. (For repos where they match, this is a no-op.)"""
+    path = os.path.join(REPOS_DIR, repo.split("/")[-1])
     clone_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{repo}.git"
     if not os.path.isdir(os.path.join(path, ".git")):
         os.makedirs(REPOS_DIR, exist_ok=True)
