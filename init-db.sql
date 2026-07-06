@@ -44,3 +44,9 @@ GRANT ALL PRIVILEGES ON DATABASE noodle_db TO noodle;
 CREATE USER for_whenever WITH PASSWORD '${FOR_WHENEVER_DB_PASSWORD}';
 CREATE DATABASE for_whenever_db OWNER for_whenever;
 GRANT ALL PRIVILEGES ON DATABASE for_whenever_db TO for_whenever;
+
+-- Create Bullshit or Fit database and user (jobtrends data engine lives in its own
+-- `jobtrends` schema inside this database; the landing/lead web app stays DB-free).
+CREATE USER bullshit_or_fit WITH PASSWORD '${BULLSHIT_OR_FIT_DB_PASSWORD}';
+CREATE DATABASE bullshit_or_fit_db OWNER bullshit_or_fit;
+GRANT ALL PRIVILEGES ON DATABASE bullshit_or_fit_db TO bullshit_or_fit;

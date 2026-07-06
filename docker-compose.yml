@@ -270,8 +270,29 @@ services:
       SPARK_SWARM_API_URL: ${BULLSHIT_OR_FIT_SPARK_SWARM_API_URL:-http://spark-swarm:8000/api/v1}
       SPARK_SLUG: ${BULLSHIT_OR_FIT_SPARK_SLUG:-bullshit-or-fit}
       CORS_ORIGINS: ${BULLSHIT_OR_FIT_CORS_ORIGINS:-https://bullshitorfit.com,https://www.bullshitorfit.com}
+      # Present for the future product tier; the web app never opens a connection today.
+      DATABASE_URL: postgresql+psycopg://${BULLSHIT_OR_FIT_DB_USER:-bullshit_or_fit}:${BULLSHIT_OR_FIT_DB_PASSWORD:?Set BULLSHIT_OR_FIT_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${BULLSHIT_OR_FIT_DB_NAME:-bullshit_or_fit_db}
     networks:
       - internal
+
+  # jobtrends ingest — pulls HN "Who is hiring?" monthly threads into the
+  # bullshit_or_fit DB (jobtrends schema). Looping worker (fleet pattern); runs
+  # `alembic upgrade head` on boot, backfills, then re-ingests the trailing months daily.
+  bullshit-or-fit-ingest:
+    image: ghcr.io/miles-automation/bullshit-or-fit:${BULLSHIT_OR_FIT_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    mem_limit: 192m
+    command: ["python", "-m", "app.jobtrends.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${BULLSHIT_OR_FIT_DB_USER:-bullshit_or_fit}:${BULLSHIT_OR_FIT_DB_PASSWORD:?Set BULLSHIT_OR_FIT_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${BULLSHIT_OR_FIT_DB_NAME:-bullshit_or_fit_db}
+      JOBTRENDS_BACKFILL_MONTHS: ${JOBTRENDS_BACKFILL_MONTHS:-18}
+      JOBTRENDS_RECENT_MONTHS: ${JOBTRENDS_RECENT_MONTHS:-2}
+      JOBTRENDS_INGEST_INTERVAL_SECONDS: ${JOBTRENDS_INGEST_INTERVAL_SECONDS:-86400}
+    networks:
+      - internal
+    depends_on:
+      bullshit-or-fit:
+        condition: service_started
 
   # Spark Swarm - Project ecosystem dashboard
   spark-swarm:
