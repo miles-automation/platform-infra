@@ -148,40 +148,80 @@ def _install_node_deps(path: str, logfile: str) -> None:
             raise RuntimeError(f"npm install failed in {os.path.relpath(pkg_dir, path)}")
 
 
-def _maybe_db_up(path: str, logfile: str) -> None:
+def _pg_sql(compose: str, cwd: str, user: str, sql: str, logfile: str) -> int:
+    return _run(["docker", "compose", "-f", compose, "exec", "-T", "postgres",
+                 "psql", "-U", user, "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", sql],
+                cwd=cwd, logfile=logfile)
+
+
+def _maybe_db_up(path: str, sha: str, logfile: str) -> dict | None:
     """App test suites gate DB tests on a reachable dev Postgres and (per conftest) must NOT
     silently skip them when CI is set — so bring up the repo's own compose postgres service if
-    it defines one. The container + named volume persist across checks; --wait blocks on its
-    healthcheck. NB: dev compose files map host port 5432, so registering a second repo with
-    its own postgres service would collide — revisit then."""
+    it defines one. The SERVER (container + named volume) persists across checks, but every
+    check runs against its own throwaway database (check_<sha>): sharing one database poisoned
+    checks across branches (2026-07-05: an in-place-edited migration failed
+    test_no_migration_drift for every later branch; a branch whose migration head differed from
+    the stored alembic_version errored unknown-revision) until the DB was manually dropped.
+    Returns {'env': {'DATABASE_URL': ...}, ...} for the check run — app config reads
+    DATABASE_URL — or None if the repo has no postgres service. Caller drops via _db_drop.
+    NB: dev compose files map host port 5432, so registering a second repo with its own
+    postgres service would collide — revisit then."""
     compose = os.path.join(path, "docker-compose.yml")
     if not os.path.isfile(compose):
-        return
+        return None
     probe = subprocess.run(
-        ["docker", "compose", "-f", compose, "config", "--services"],
+        ["docker", "compose", "-f", compose, "config", "--format", "json"],
         cwd=path, capture_output=True, text=True,
     )
-    if probe.returncode != 0 or "postgres" not in probe.stdout.split():
-        return
+    if probe.returncode != 0:
+        return None
+    svc = (json.loads(probe.stdout).get("services") or {}).get("postgres")
+    if not svc:
+        return None
     if _run(["docker", "compose", "-f", compose, "up", "-d", "--wait", "postgres"],
             cwd=path, logfile=logfile) != 0:
         raise RuntimeError("dev postgres failed to start")
+    svc_env = svc.get("environment") or {}
+    user = svc_env.get("POSTGRES_USER", "postgres")
+    password = svc_env.get("POSTGRES_PASSWORD", "")
+    port = "5432"
+    for p in svc.get("ports") or []:
+        if isinstance(p, dict) and p.get("target") == 5432 and p.get("published"):
+            port = str(p["published"])
+    db = {"compose": compose, "cwd": path, "user": user, "name": f"check_{sha[:12]}"}
+    _db_drop(db, logfile)  # a re-delivered/retried sha may have left one behind
+    if _pg_sql(compose, path, user,
+               f"CREATE DATABASE \"{db['name']}\" OWNER \"{user}\"", logfile) != 0:
+        raise RuntimeError(f"could not create check database {db['name']}")
+    auth = f"{user}:{password}@" if password else f"{user}@"
+    db["env"] = {"DATABASE_URL": f"postgresql+psycopg://{auth}localhost:{port}/{db['name']}"}
+    return db
+
+
+def _db_drop(db: dict, logfile: str) -> None:
+    _pg_sql(db["compose"], db["cwd"], db["user"],
+            f"DROP DATABASE IF EXISTS \"{db['name']}\" WITH (FORCE)", logfile)
 
 
 def do_check(job: dict) -> None:
     repo, sha, project = job["repo"], job["sha"], job["project"]
     logfile = os.path.join(LOG_DIR, f"check-{project}-{sha[:7]}.log")
     set_status(repo, sha, "pending", "platform-ci: running make check")
+    db = None
     try:
         path = _checkout(project, repo, sha, logfile)
         _install_node_deps(path, logfile)
-        _maybe_db_up(path, logfile)
+        db = _maybe_db_up(path, sha, logfile)
+        extra_env = {"CI": "1", **(db["env"] if db else {})}
         rc = _run([PLATFORM_BIN, "check", project], cwd=WORKSPACE, logfile=logfile,
-                  extra_env={"CI": "1"})
+                  extra_env=extra_env)
     except Exception as e:  # noqa: BLE001
         log(f"check error {project}@{sha[:7]}: {e}")
         set_status(repo, sha, "error", f"platform-ci error: {e}")
         return
+    finally:
+        if db:
+            _db_drop(db, logfile)
     set_status(repo, sha, "success" if rc == 0 else "failure",
                "checks passed" if rc == 0 else "make check failed")
 

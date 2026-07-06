@@ -26,6 +26,17 @@ GitHub ──webhook (HMAC sha256)──► Caddy(ci.sparkswarm.com) ──► w
 
 Deliveries are HMAC-verified and serialized (one job at a time; small box).
 
+### Check-run database isolation
+
+If the repo's compose file defines a `postgres` service, the worker brings it up (`--wait`) and
+keeps the SERVER (container + volume) across runs — but each check gets its own throwaway
+database `check_<sha>` (created before the run, `DATABASE_URL` exported into the check env,
+dropped `WITH (FORCE)` after). Databases are never shared between runs: on 2026-07-05 a shared
+DB let one branch's alembic history poison every subsequent branch's check (an in-place-edited
+migration broke `test_no_migration_drift` fleet-wide; a divergent migration head errored
+unknown-revision) until the DB was manually dropped. Caveat still open: dev compose files map
+host port 5432, so a second registered repo with its own postgres service would collide.
+
 ## Files
 
 - `worker.py` — the service (stdlib only; no FastAPI/uvicorn to maintain).
