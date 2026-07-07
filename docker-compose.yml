@@ -288,6 +288,9 @@ services:
       JOBTRENDS_BACKFILL_MONTHS: ${JOBTRENDS_BACKFILL_MONTHS:-18}
       JOBTRENDS_RECENT_MONTHS: ${JOBTRENDS_RECENT_MONTHS:-2}
       JOBTRENDS_INGEST_INTERVAL_SECONDS: ${JOBTRENDS_INGEST_INTERVAL_SECONDS:-86400}
+      # USAJobs (federal) source — empty key = snapshot skips (see app/jobtrends/usajobs.py).
+      USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
+      USAJOBS_USER_AGENT: ${USAJOBS_USER_AGENT:-}
     networks:
       - internal
     depends_on:
