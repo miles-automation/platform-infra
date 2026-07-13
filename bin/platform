@@ -956,12 +956,15 @@ def _cloudflare_upsert_record(
     *,
     token: str,
     zone_id: str,
+    zone_name: str | None = None,
     record_type: str,
     name: str,
     content: str,
     proxied: bool,
     priority: int | None = None,
 ) -> None:
+    name = _cloudflare_record_name(name=name, zone_name=zone_name)
+
     headers = {"Authorization": f"Bearer {token}"}
     list_url = (
         f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?"
@@ -973,10 +976,24 @@ def _cloudflare_upsert_record(
     result = data.get("result")
     record_id: str | None = None
     if isinstance(result, list) and result:
-        # For MX records, match by content too (multiple MX records can exist)
+        for rec in result:
+            if rec.get("content") == content:
+                # Desired record already exists. Avoid PUTting another record to duplicate content,
+                # which Cloudflare rejects for TXT records.
+                return
+        # For MX records, match by content too (multiple MX records can exist).
         if record_type == "MX":
             for rec in result:
                 if rec.get("content") == content:
+                    rid = rec.get("id")
+                    if isinstance(rid, str) and rid:
+                        record_id = rid
+                    break
+        elif record_type == "TXT" and content.lower().startswith("v=spf1 "):
+            # One SPF TXT is valid per hostname. If the desired value is not present yet, update an
+            # existing SPF record instead of an arbitrary TXT such as google-site-verification.
+            for rec in result:
+                if str(rec.get("content") or "").lower().startswith("v=spf1 "):
                     rid = rec.get("id")
                     if isinstance(rid, str) and rid:
                         record_id = rid
@@ -1001,6 +1018,89 @@ def _cloudflare_upsert_record(
         out = _http_json(method="POST", url=url, headers=headers, data=payload)
     if not out.get("success"):
         raise SystemExit(f"Cloudflare dns_records upsert failed: {out}")
+
+
+def _cloudflare_record_name(*, name: str, zone_name: str | None) -> str:
+    if not zone_name:
+        return name
+    zone_name = zone_name.rstrip(".")
+    clean_name = name.rstrip(".")
+    if clean_name == "@":
+        return zone_name
+    if clean_name == zone_name or clean_name.endswith(f".{zone_name}"):
+        return clean_name
+    return f"{clean_name}.{zone_name}"
+
+
+def _cloudflare_prune_txt_records(
+    *,
+    token: str,
+    zone_id: str,
+    zone_name: str,
+    name: str,
+    keep_content: str,
+    content_prefix: str,
+) -> None:
+    fqdn = _cloudflare_record_name(name=name, zone_name=zone_name)
+    headers = {"Authorization": f"Bearer {token}"}
+    list_url = (
+        f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?"
+        f"type=TXT&name={urllib.parse.quote(fqdn)}"
+    )
+    data = _http_json(method="GET", url=list_url, headers=headers)
+    if not data.get("success"):
+        raise SystemExit(f"Cloudflare dns_records list failed: {data}")
+    result = data.get("result")
+    if not isinstance(result, list):
+        return
+    prefix = content_prefix.lower()
+    for rec in result:
+        content = str(rec.get("content") or "")
+        if content == keep_content or not content.lower().startswith(prefix):
+            continue
+        record_id = rec.get("id")
+        if not isinstance(record_id, str) or not record_id:
+            continue
+        out = _http_json(
+            method="DELETE",
+            url=f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}",
+            headers=headers,
+        )
+        if not out.get("success"):
+            raise SystemExit(f"Cloudflare dns_records delete failed: {out}")
+
+
+def _email_dns_extra_txt_records(email_cfg: Any) -> list[dict[str, str]]:
+    """Project-level TXT additions for email DNS.
+
+    Expected platform.toml shape:
+
+      [projects.example.email_dns]
+      spf = "v=spf1 include:mxroute.com include:spf.mtasv.net -all"
+
+      [[projects.example.email_dns.txt_records]]
+      name = "_dmarc"
+      value = "v=DMARC1; p=none; rua=mailto:dmarc@example.com"
+    """
+    if not isinstance(email_cfg, dict):
+        return []
+    raw_records = email_cfg.get("txt_records", [])
+    if raw_records is None:
+        return []
+    if not isinstance(raw_records, list):
+        raise SystemExit("[projects.<key>.email_dns].txt_records must be a list of tables")
+    records: list[dict[str, str]] = []
+    for idx, raw in enumerate(raw_records, 1):
+        if not isinstance(raw, dict):
+            raise SystemExit(f"email_dns.txt_records[{idx}] must be a table")
+        name = raw.get("name")
+        value = raw.get("value", raw.get("content"))
+        if not isinstance(name, str) or not name.strip():
+            raise SystemExit(f"email_dns.txt_records[{idx}] needs a non-empty name")
+        if not isinstance(value, str) or not value.strip():
+            raise SystemExit(f"email_dns.txt_records[{idx}] needs a non-empty value")
+        records.append({"name": name.strip(), "value": value.strip()})
+    return records
 
 
 def cmd_dns_apply(args: argparse.Namespace) -> None:
@@ -1070,6 +1170,7 @@ def cmd_dns_apply(args: argparse.Namespace) -> None:
     _cloudflare_upsert_record(
         token=cf_token,
         zone_id=zone_id,
+        zone_name=apex,
         record_type="A",
         name=apex,
         content=droplet_ip,
@@ -1078,6 +1179,7 @@ def cmd_dns_apply(args: argparse.Namespace) -> None:
     _cloudflare_upsert_record(
         token=cf_token,
         zone_id=zone_id,
+        zone_name=apex,
         record_type="CNAME",
         name=www,
         content=apex,
@@ -1086,7 +1188,7 @@ def cmd_dns_apply(args: argparse.Namespace) -> None:
 
 
 def cmd_dns_email_apply(args: argparse.Namespace) -> None:
-    """Apply email DNS records (MX, SPF, DKIM) for a project domain via Cloudflare."""
+    """Apply email DNS records (MX, SPF, DKIM, and configured TXT) via Cloudflare."""
     cfg = args.cfg
 
     proj = project_cfg(cfg, args.project)
@@ -1137,11 +1239,25 @@ def cmd_dns_email_apply(args: argparse.Namespace) -> None:
     except Exception as e:
         raise SystemExit(f"Failed to fetch email DNS records for {apex}: {e}") from e
 
+    email_cfg = proj.get("email_dns")
+    if email_cfg is not None and not isinstance(email_cfg, dict):
+        raise SystemExit(f"[projects.{args.project}.email_dns] must be a table/object")
+
     mx_records = dns_data.get("mx_records", [])
     spf = dns_data.get("spf")
     dkim = dns_data.get("dkim")
+    extra_txt_records = _email_dns_extra_txt_records(email_cfg)
 
-    if not mx_records and not spf and not dkim:
+    spf_override = email_cfg.get("spf") if isinstance(email_cfg, dict) else None
+    if spf_override is not None:
+        if not isinstance(spf_override, str) or not spf_override.strip():
+            raise SystemExit(f"[projects.{args.project}.email_dns].spf must be a non-empty string")
+        if not isinstance(spf, dict):
+            spf = {"name": apex, "value": spf_override.strip()}
+        else:
+            spf = {**spf, "value": spf_override.strip()}
+
+    if not mx_records and not spf and not dkim and not extra_txt_records:
         raise SystemExit(f"No email DNS records returned for {apex}. Is the domain added in Spark Swarm?")
 
     if not args.quiet:
@@ -1151,6 +1267,8 @@ def cmd_dns_email_apply(args: argparse.Namespace) -> None:
             print(f"+ cloudflare: zone={apex} set TXT {spf['name']} (SPF)", file=sys.stderr)
         if dkim:
             print(f"+ cloudflare: zone={apex} set TXT {dkim['name']} (DKIM)", file=sys.stderr)
+        for record in extra_txt_records:
+            print(f"+ cloudflare: zone={apex} set TXT {record['name']} (email override)", file=sys.stderr)
 
     if args.dry_run:
         return
@@ -1165,6 +1283,7 @@ def cmd_dns_email_apply(args: argparse.Namespace) -> None:
         _cloudflare_upsert_record(
             token=cf_token,
             zone_id=zone_id,
+            zone_name=apex,
             record_type="MX",
             name=apex,
             content=mx["value"],
@@ -1175,18 +1294,38 @@ def cmd_dns_email_apply(args: argparse.Namespace) -> None:
         _cloudflare_upsert_record(
             token=cf_token,
             zone_id=zone_id,
+            zone_name=apex,
             record_type="TXT",
             name=spf.get("name", apex),
             content=spf["value"],
             proxied=False,
         )
+        _cloudflare_prune_txt_records(
+            token=cf_token,
+            zone_id=zone_id,
+            zone_name=apex,
+            name=spf.get("name", apex),
+            keep_content=spf["value"],
+            content_prefix="v=spf1 ",
+        )
     if dkim:
         _cloudflare_upsert_record(
             token=cf_token,
             zone_id=zone_id,
+            zone_name=apex,
             record_type="TXT",
             name=dkim["name"],
             content=dkim["value"],
+            proxied=False,
+        )
+    for record in extra_txt_records:
+        _cloudflare_upsert_record(
+            token=cf_token,
+            zone_id=zone_id,
+            zone_name=apex,
+            record_type="TXT",
+            name=record["name"],
+            content=record["value"],
             proxied=False,
         )
 
@@ -2361,9 +2500,23 @@ def cmd_canvas_serve(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--config", help="Path to platform.toml (defaults to workspace root/platform.toml)")
-    common.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
-    common.add_argument("--quiet", action="store_true", help="Suppress '+ <cmd>' output")
+    common.add_argument(
+        "--config",
+        default=argparse.SUPPRESS,
+        help="Path to platform.toml (defaults to workspace root/platform.toml)",
+    )
+    common.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Print commands without executing them",
+    )
+    common.add_argument(
+        "--quiet",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Suppress '+ <cmd>' output",
+    )
 
     p = argparse.ArgumentParser(
         prog="platform",
@@ -2740,11 +2893,14 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     workspace_root = find_workspace_root(Path.cwd())
-    cfg = load_config(workspace_root, args.config)
+    cfg = load_config(workspace_root, getattr(args, "config", None))
 
     args.workspace_root = workspace_root
     args.cfg = cfg
     args.passthrough = passthrough
+    args.config = getattr(args, "config", None)
+    args.dry_run = bool(getattr(args, "dry_run", False))
+    args.quiet = bool(getattr(args, "quiet", False))
 
     if passthrough and args.cmd not in {"run", "gh", "agent"}:
         raise SystemExit("Extra args after '--' are only supported for 'platform run', 'platform gh', and 'platform agent'")

@@ -21,6 +21,11 @@ with) the copy tracked here.
 ## Notes
 
 - Secrets are resolved at runtime from Spark Swarm; none are hardcoded here.
+- `platform dns email-apply` gets provider MX/SPF/DKIM records from Spark Swarm's
+  email inventory, and can be refined per project with `[projects.<key>.email_dns]`
+  in workspace `platform.toml`. Use `spf = "..."` when a domain has more than one
+  legitimate sender, and `[[projects.<key>.email_dns.txt_records]]` for additional
+  email TXT records such as DMARC.
 - Production health checks probe **HTTPS** via `curl --resolve <domain>:443:127.0.0.1`
   rather than HTTP, because bare-domain Caddy sites auto-redirect HTTP→HTTPS with
   a 308 that `curl -f` treats as success — an HTTP probe would pass even with the
