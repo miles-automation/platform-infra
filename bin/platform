@@ -18,8 +18,7 @@ from typing import Any
 try:
     import tomllib  # py3.11+
 except ModuleNotFoundError:  # pragma: no cover
-    print("Error: Python 3.11+ is required (tomllib missing).", file=sys.stderr)
-    raise
+    tomllib = None  # type: ignore[assignment]
 
 
 def _eprint(*args: object) -> None:
@@ -41,6 +40,8 @@ def find_workspace_root(start_dir: Path) -> Path:
 
 
 def load_config(workspace_root: Path, config_path: str | None) -> dict[str, Any]:
+    if tomllib is None:
+        raise RuntimeError("Python 3.11+ is required to read platform.toml (tomllib missing).")
     path = Path(config_path) if config_path else (workspace_root / "platform.toml")
     data = tomllib.loads(path.read_text())
     if not isinstance(data, dict):
