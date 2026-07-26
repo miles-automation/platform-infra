@@ -186,10 +186,18 @@ services:
   human-index-v2:
     image: ghcr.io/miles-automation/human-index-v2-app:${HUMAN_INDEX_V2_IMAGE_TAG:-latest}
     restart: unless-stopped
-    # 512m (was 256m): the blob proxy reads attachment bytes into memory to stream them, and
-    # boto3's footprint is non-trivial — headroom for image upload/serve.
-    mem_limit: 512m
+    # 768m (was 512m, was 256m): a heavy Source day (~176 msgs) fires ~20 concurrent blob loads;
+    # each HEIC decode holds a full uncompressed bitmap, so the burst spiked anon-rss past the 512m
+    # cgroup limit and the OOM-killer killed uvicorn (2026-06-29). The durable fix shipped in the app
+    # (stream blob bytes instead of buffering + a HEIC-transcode semaphore + MALLOC_ARENA_MAX below),
+    # so memory is now bounded; 768m is kept as headroom and can be lowered toward 512m once the new
+    # build is verified under a heavy day.
+    mem_limit: 768m
     environment:
+      # Cap glibc per-thread arenas: the blob proxy runs in a thread pool, and default arena-per-
+      # thread retention ratcheted RSS up under image bursts (it never released back to the OS).
+      # 2 arenas keeps fragmentation/retention bounded for a service this size.
+      MALLOC_ARENA_MAX: "2"
       DATABASE_URL: postgresql+psycopg://${HUMAN_INDEX_V2_DB_USER:-human_index_v2}:${HUMAN_INDEX_V2_DB_PASSWORD:?Set HUMAN_INDEX_V2_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${HUMAN_INDEX_V2_DB_NAME:-human_index_v2}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Spark Swarm OAuth — the SAME client serves both the authed iMessage-ingest introspection
