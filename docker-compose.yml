@@ -301,6 +301,15 @@ services:
       USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
       USAJOBS_USER_AGENT: ${USAJOBS_USER_AGENT:-}
       USAJOBS_PROXY: ${USAJOBS_PROXY:-}
+      # Adzuna (all-industry aggregator) — empty id/key = snapshot skips.
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID:-}
+      ADZUNA_APP_KEY: ${ADZUNA_APP_KEY:-}
+      ADZUNA_COUNTRY: ${ADZUNA_COUNTRY:-us}
+      ADZUNA_PAGES: ${ADZUNA_PAGES:-10}
+      # Scoped Spark Swarm key (project=bullshit-or-fit), used ONLY to POST source
+      # -staleness transitions to /api/v1/events — an `incident` event is what makes
+      # Spark Swarm send the Matrix ops message. Empty = detect and log, don't notify.
+      BULLSHIT_OR_FIT_SS_API_KEY: ${BULLSHIT_OR_FIT_SS_API_KEY:-}
     networks:
       - internal
     depends_on:
