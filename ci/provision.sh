@@ -55,6 +55,13 @@ install -m 0644 "$REPO_DIR/ci/platform-ci.service" /etc/systemd/system/platform-
 systemctl daemon-reload
 systemctl enable platform-ci >/dev/null 2>&1 || true
 
+echo "==> docker disk guard (prune timer)"
+install -m 0755 "$REPO_DIR/scripts/docker_prune.sh" /usr/local/bin/docker-prune
+install -m 0644 "$REPO_DIR/systemd/docker-prune.service" /etc/systemd/system/docker-prune.service
+install -m 0644 "$REPO_DIR/systemd/docker-prune.timer" /etc/systemd/system/docker-prune.timer
+systemctl daemon-reload
+systemctl enable --now docker-prune.timer
+
 echo "==> caddy config"
 install -d /etc/caddy
 install -m 0644 "$REPO_DIR/ci/Caddyfile" /etc/caddy/Caddyfile

@@ -26,6 +26,14 @@ GitHub ──webhook (HMAC sha256)──► Caddy(ci.sparkswarm.com) ──► w
 
 Deliveries are HMAC-verified and serialized (one job at a time; small box).
 
+### Disk guard
+
+The box is 24G and filled up on 2026-08-02, killing a build with a cryptic npm ENOSPC. Two
+layers now guard it: the fleet-wide `docker-prune.timer` (see repo README — installed here by
+`provision.sh`), and a pre-job check in the worker — below `PLATFORM_CI_MIN_FREE_GB` free
+(default 5), it runs `/usr/local/bin/docker-prune` once and, if still low, fails the job
+immediately with a `disk low: …` commit status instead of a mid-build ENOSPC.
+
 ### Check-run database isolation
 
 If the repo's compose file defines a `postgres` service, the worker brings it up (`--wait`) and

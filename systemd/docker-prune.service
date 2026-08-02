@@ -1,0 +1,14 @@
+[Unit]
+Description=Docker disk guard: prune old images, build cache, exited containers
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+# Installed by `install -m 0755 scripts/docker_prune.sh /usr/local/bin/docker-prune`
+# (same path on prod and platform-ci, so this unit is identical on both boxes).
+ExecStart=/usr/local/bin/docker-prune
+
+[Install]
+WantedBy=multi-user.target

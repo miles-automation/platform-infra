@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -43,6 +44,11 @@ LISTEN_HOST = os.environ.get("PLATFORM_CI_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("PLATFORM_CI_PORT", "8765"))
 STATUS_CONTEXT = os.environ.get("PLATFORM_CI_STATUS_CONTEXT", "platform-ci")
 LOG_DIR = os.environ.get("PLATFORM_CI_LOG_DIR", "/srv/platform-ci/logs")
+# Below this many free GB on the workspace filesystem, jobs fail fast with a clear "disk low"
+# commit status instead of dying mid-build on a cryptic npm/docker ENOSPC (2026-08-02: a full
+# disk surfaced as an npm tarball error). The worker runs the standing prune script once first.
+MIN_FREE_GB = float(os.environ.get("PLATFORM_CI_MIN_FREE_GB", "5"))
+PRUNE_BIN = os.environ.get("PLATFORM_CI_PRUNE_BIN", "/usr/local/bin/docker-prune")
 
 # repo full_name -> {project, clone_url}. JSON in PLATFORM_CI_REPO_MAP, e.g.
 # {"miles-automation/human-index-v2": {"project": "human-index-v2"}}
@@ -209,9 +215,27 @@ def _db_drop(db: dict, logfile: str) -> None:
             f"DROP DATABASE IF EXISTS \"{db['name']}\" WITH (FORCE)", logfile)
 
 
+def _ensure_disk(repo: str, sha: str, logfile: str) -> bool:
+    """Guard a job against a nearly-full disk; returns False (with an error commit status
+    already posted) when there isn't enough room to safely build."""
+    free_gb = shutil.disk_usage(WORKSPACE).free / 1e9
+    if free_gb < MIN_FREE_GB and os.path.exists(PRUNE_BIN):
+        log(f"disk low ({free_gb:.1f}G free) — running {PRUNE_BIN}")
+        _run([PRUNE_BIN], cwd=None, logfile=logfile)
+        free_gb = shutil.disk_usage(WORKSPACE).free / 1e9
+    if free_gb >= MIN_FREE_GB:
+        return True
+    msg = f"disk low: {free_gb:.1f}G free < {MIN_FREE_GB:g}G floor — prune docker or grow the disk"
+    log(f"{msg} ({repo}@{sha[:7]})")
+    set_status(repo, sha, "error", f"platform-ci: {msg}")
+    return False
+
+
 def do_check(job: dict) -> None:
     repo, sha, project = job["repo"], job["sha"], job["project"]
     logfile = os.path.join(LOG_DIR, f"check-{project}-{sha[:7]}.log")
+    if not _ensure_disk(repo, sha, logfile):
+        return
     set_status(repo, sha, "pending", "platform-ci: running make check")
     db = None
     try:
@@ -235,6 +259,8 @@ def do_check(job: dict) -> None:
 def do_build_deploy(job: dict) -> None:
     repo, sha, project = job["repo"], job["sha"], job["project"]
     logfile = os.path.join(LOG_DIR, f"deploy-{project}-{sha[:7]}.log")
+    if not _ensure_disk(repo, sha, logfile):
+        return
     set_status(repo, sha, "pending", "platform-ci: build + deploy")
     try:
         _checkout(project, repo, sha, logfile)

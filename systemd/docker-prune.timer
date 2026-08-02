@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the docker disk guard daily at 04:30 UTC (after the 03:00 db backup)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -256,6 +256,39 @@ cd /root/platform-infra
 scripts/db_backup.sh run
 ```
 
+## Docker Disk Guard
+
+Both droplets have filled their root disks with docker debris and broken deploys with cryptic
+ENOSPC errors (prod 2026-07-20, platform-ci 2026-08-02). `scripts/docker_prune.sh` runs daily
+via `systemd/docker-prune.timer` on **both** the prod droplet and the platform-ci droplet: it
+prunes old exited containers, unused images older than 7 days (running containers' images and
+recent rollback tags are kept), and build cache older than 3 days, then escalates to a full
+unused prune if the disk is still ≥80% full. It never touches volumes. Thresholds are
+env-overridable (`DOCKER_PRUNE_THRESHOLD_PCT`, `DOCKER_PRUNE_IMAGE_UNTIL`,
+`DOCKER_PRUNE_BUILDER_UNTIL`).
+
+The CI worker also fails jobs fast with a clear `disk low` commit status (after trying one
+prune) instead of letting npm/docker die mid-build — see `ci/README.md`.
+
+Install on a droplet (the ci box gets this automatically from `ci/provision.sh`):
+
+```bash
+cd /root/platform-infra
+install -m 0755 scripts/docker_prune.sh /usr/local/bin/docker-prune
+install -m 644 systemd/docker-prune.service /etc/systemd/system/docker-prune.service
+install -m 644 systemd/docker-prune.timer /etc/systemd/system/docker-prune.timer
+systemctl daemon-reload
+systemctl enable --now docker-prune.timer
+```
+
+Verify / run once by hand:
+
+```bash
+systemctl status docker-prune.timer --no-pager
+systemctl start docker-prune.service
+journalctl -u docker-prune.service -n 50 --no-pager
+```
+
 ## Directory Structure
 
 ```
@@ -271,12 +304,15 @@ platform-infra/
 ├── README.md                # This file
 ├── scripts/
 │   ├── db_backup.sh         # Postgres backup + Spaces upload + retention
+│   ├── docker_prune.sh      # Docker disk guard (images/build-cache/containers)
 │   └── metrics-collector.py # Host metrics ingest
 ├── systemd/
 │   ├── db-backup.service
 │   ├── db-backup.timer
 │   ├── db-backup-health.service
 │   ├── db-backup-health.timer
+│   ├── docker-prune.service
+│   ├── docker-prune.timer
 │   ├── metrics-collector.service
 │   └── metrics-collector.timer
 └── docs/
