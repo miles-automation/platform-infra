@@ -96,6 +96,21 @@ docker compose up -d
 docker compose logs -f
 ```
 
+## Platform CLI
+
+`bin/platform` provides workspace and Spark Swarm operations. Lead pipeline commands use the
+`SPARK_SWARM_API_KEY` environment variable:
+
+```bash
+python3.13 bin/platform leads list
+python3.13 bin/platform leads list --status confirmed --overdue --limit 25
+python3.13 bin/platform leads show <id-or-uuid>
+python3.13 bin/platform leads advance <id-or-uuid> outreach_drafted
+```
+
+The default lead project is `richmiles-xyz`; pass `--project` to select another configured Spark
+or slug. `leads advance` follows the status transitions enforced by Spark Swarm.
+
 ## Initial Server Setup
 
 For a fresh droplet, run the setup script:
