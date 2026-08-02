@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -884,6 +885,211 @@ def _sparkswarm_resolve_spark_id(*, base: str, api_key: str, slug: str) -> int |
         return None
     spark_id = data.get("id")
     return int(spark_id) if isinstance(spark_id, int) else None
+
+
+def _sparkswarm_project_slug(cfg: dict[str, Any], project_key: str) -> str:
+    projects = cfg.get("projects")
+    if isinstance(projects, dict):
+        project = projects.get(project_key)
+        if isinstance(project, dict):
+            spark_slug = project.get("spark_slug")
+            if isinstance(spark_slug, str) and spark_slug.strip():
+                return spark_slug.strip()
+    return project_key
+
+
+def _sparkswarm_api_error_detail(error: urllib.error.HTTPError) -> str:
+    try:
+        raw = error.read().decode("utf-8")
+        if raw:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                detail = parsed.get("detail") or parsed.get("message") or parsed.get("error")
+                if isinstance(detail, str) and detail:
+                    return detail
+                if detail is not None:
+                    return json.dumps(detail, sort_keys=True)
+            return raw
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    return str(error.reason)
+
+
+def _sparkswarm_leads_request(
+    *,
+    method: str,
+    url: str,
+    api_key: str,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        return _http_json(method=method, url=url, headers={"X-API-Key": api_key}, data=data)
+    except urllib.error.HTTPError as e:
+        detail = _sparkswarm_api_error_detail(e)
+        raise SystemExit(f"Spark Swarm API error ({e.code}): {detail}") from e
+    except urllib.error.URLError as e:
+        raise SystemExit(f"Spark Swarm API request failed: {e.reason}") from e
+
+
+LEAD_STATUSES = (
+    "pending_confirmation",
+    "confirmed",
+    "outreach_drafted",
+    "outreach_sent",
+    "spam",
+    "unsubscribed",
+)
+
+
+def _lead_limit(value: str) -> int:
+    try:
+        limit = int(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("limit must be an integer") from e
+    if not 1 <= limit <= 500:
+        raise argparse.ArgumentTypeError("limit must be between 1 and 500")
+    return limit
+
+
+def _lead_timestamp(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    return " ".join(str(value).replace("T", " ", 1).split())
+
+
+def _lead_text(value: Any) -> str:
+    if value is None or value == "":
+        return "-"
+    return " ".join(str(value).split())
+
+
+def _leads_url(base: str, lead_id: str) -> str:
+    return f"{base}/leads/{urllib.parse.quote(str(lead_id), safe='')}"
+
+
+def _leads_query(args: argparse.Namespace, spark_id: int) -> str:
+    params: list[tuple[str, str]] = [("spark_id", str(spark_id))]
+    if args.status:
+        params.append(("status", args.status))
+    if args.overdue:
+        params.append(("is_overdue", "true"))
+    params.append(("limit", str(args.limit)))
+    return urllib.parse.urlencode(params)
+
+
+def _resolve_leads_spark_id(args: argparse.Namespace, base: str, api_key: str) -> int:
+    slug = _sparkswarm_project_slug(args.cfg, args.project)
+    try:
+        spark_id = _sparkswarm_resolve_spark_id(base=base, api_key=api_key, slug=slug)
+    except urllib.error.HTTPError as e:
+        detail = _sparkswarm_api_error_detail(e)
+        raise SystemExit(f"Spark Swarm API error ({e.code}): {detail}") from e
+    except urllib.error.URLError as e:
+        raise SystemExit(f"Spark Swarm API request failed: {e.reason}") from e
+    if spark_id is None:
+        raise SystemExit(f"Spark not found for project {args.project!r} (slug {slug!r})")
+    return spark_id
+
+
+def cmd_leads_list(args: argparse.Namespace) -> None:
+    base = _sparkswarm_api_base(args)
+    api_key = _require_env("SPARK_SWARM_API_KEY")
+    slug = _sparkswarm_project_slug(args.cfg, args.project)
+
+    if args.dry_run:
+        spark_url = f"{base}/sparks/{urllib.parse.quote(slug)}"
+        if not args.quiet:
+            print(f"+ GET {spark_url}", file=sys.stderr)
+            print(f"+ GET {base}/leads?spark_id=<resolved>&{_leads_query(args, 0).split('&', 1)[1]}", file=sys.stderr)
+        return
+
+    spark_id = _resolve_leads_spark_id(args, base, api_key)
+    query = _leads_query(args, spark_id)
+    data = _sparkswarm_leads_request(
+        method="GET",
+        url=f"{base}/leads?{query}",
+        api_key=api_key,
+    )
+    leads = data.get("leads", [])
+    if not isinstance(leads, list):
+        raise SystemExit("Unexpected leads list response: 'leads' must be a list")
+
+    rows: list[list[str]] = []
+    for lead in leads:
+        if not isinstance(lead, dict):
+            continue
+        rows.append(
+            [
+                _lead_text(lead.get("id")),
+                _lead_text(lead.get("name")),
+                _lead_text(lead.get("email")),
+                _lead_text(lead.get("company")),
+                _lead_text(lead.get("status")),
+                _lead_timestamp(lead.get("created_at")),
+                _lead_timestamp(lead.get("first_outreach_due_at")),
+                "OVERDUE" if lead.get("is_overdue") else "",
+            ]
+        )
+
+    headers = ["ID", "NAME", "EMAIL", "COMPANY", "STATUS", "CREATED", "REPLY-DUE", "ALERT"]
+    widths = [
+        max([len(header), *(len(row[index]) for row in rows)])
+        for index, header in enumerate(headers)
+    ]
+    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    print("  ".join("-" * width for width in widths))
+    for row in rows:
+        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+    if not rows:
+        print("No leads found.")
+
+    counts = data.get("by_status", {})
+    if isinstance(counts, dict):
+        count_items = [f"{status}={counts[status]}" for status in LEAD_STATUSES if status in counts]
+        count_items.extend(
+            f"{status}={counts[status]}"
+            for status in sorted(counts)
+            if status not in LEAD_STATUSES
+        )
+    else:
+        count_items = []
+    total = data.get("total", len(rows))
+    print(f"\nTotal: {total} | by status: {', '.join(count_items) or '-'}")
+
+
+def cmd_leads_show(args: argparse.Namespace) -> None:
+    base = _sparkswarm_api_base(args)
+    api_key = _require_env("SPARK_SWARM_API_KEY")
+    url = _leads_url(base, args.lead_id)
+    if args.dry_run:
+        if not args.quiet:
+            print(f"+ GET {url}", file=sys.stderr)
+        return
+
+    data = _sparkswarm_leads_request(method="GET", url=url, api_key=api_key)
+    print(json.dumps(data, indent=2, sort_keys=True))
+
+
+def cmd_leads_advance(args: argparse.Namespace) -> None:
+    base = _sparkswarm_api_base(args)
+    api_key = _require_env("SPARK_SWARM_API_KEY")
+    url = _leads_url(base, args.lead_id)
+    if args.dry_run:
+        if not args.quiet:
+            print(f"+ GET {url}", file=sys.stderr)
+            print(f"+ PATCH {url} status={args.status!r}", file=sys.stderr)
+        return
+
+    current = _sparkswarm_leads_request(method="GET", url=url, api_key=api_key)
+    old_status = current.get("status", "unknown")
+    updated = _sparkswarm_leads_request(
+        method="PATCH",
+        url=url,
+        api_key=api_key,
+        data={"status": args.status},
+    )
+    new_status = updated.get("status", args.status)
+    print(f"Lead {args.lead_id}: {old_status} -> {new_status}")
 
 
 def _sparkswarm_log_event(
@@ -2852,6 +3058,31 @@ def build_parser() -> argparse.ArgumentParser:
     spark_run_resume.add_argument("run_id", type=int)
     spark_run_resume.add_argument("--json", action="store_true", help="Output full JSON")
     spark_run_resume.set_defaults(func=cmd_spark_run_resume)
+
+    leads = sub.add_parser("leads", help="Spark Swarm lead pipeline helpers", parents=[common])
+    leads_sub = leads.add_subparsers(dest="leads_cmd", required=True)
+
+    leads_list = leads_sub.add_parser("list", help="List leads for a project", parents=[common])
+    leads_list.add_argument(
+        "--project", default="richmiles-xyz", help="Project or spark slug (default: richmiles-xyz)"
+    )
+    leads_list.add_argument("--status", choices=LEAD_STATUSES, help="Filter by lead status")
+    leads_list.add_argument("--overdue", action="store_true", help="Show only overdue leads")
+    leads_list.add_argument(
+        "--limit", type=_lead_limit, default=100, help="Maximum leads to return (default: 100)"
+    )
+    leads_list.set_defaults(func=cmd_leads_list)
+
+    leads_show = leads_sub.add_parser("show", help="Show full lead detail and events", parents=[common])
+    leads_show.add_argument("lead_id", help="Lead numeric ID or UUID")
+    leads_show.set_defaults(func=cmd_leads_show)
+
+    leads_advance = leads_sub.add_parser(
+        "advance", help="Advance a lead to a new status", parents=[common]
+    )
+    leads_advance.add_argument("lead_id", help="Lead numeric ID or UUID")
+    leads_advance.add_argument("status", choices=LEAD_STATUSES, help="Target lead status")
+    leads_advance.set_defaults(func=cmd_leads_advance)
 
     # -- canvas ---------------------------------------------------------------
     canvas = sub.add_parser("canvas", help="UI Canvas: capture & compare screens across all sparks", parents=[common])
