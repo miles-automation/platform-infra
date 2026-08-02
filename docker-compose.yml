@@ -124,6 +124,16 @@ services:
       POSTGRES_DB: ${SYNAPSE_DB_NAME:-synapse_db}
       POSTGRES_USER: ${SYNAPSE_DB_USER:-synapse}
       POSTGRES_PASSWORD: ${SYNAPSE_DB_PASSWORD:?Set SYNAPSE_DB_PASSWORD in .env}
+    # The POSTGRES_* vars above are read ONLY by the image's first-run config
+    # generation. Once /data/homeserver.yaml exists they're ignored — and that file
+    # baked in `host: postgres` on 2026-01-21, when Postgres was still a container
+    # on this droplet. After the DB moved to the platform-db droplet every other
+    # service followed POSTGRES_HOST from .env, but Synapse kept its frozen config
+    # and every DB-touching request 500'd (login included) from ~2026-03 until
+    # 2026-08-02. Mapping the baked hostname keeps homeserver.yaml correct and lets
+    # it track .env instead of hardcoding an IP inside the volume.
+    extra_hosts:
+      - "postgres:${POSTGRES_HOST:-10.108.0.5}"
     volumes:
       - synapse_data:/data
     networks:
