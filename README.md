@@ -106,10 +106,22 @@ python3.13 bin/platform leads list
 python3.13 bin/platform leads list --status confirmed --overdue --limit 25
 python3.13 bin/platform leads show <id-or-uuid>
 python3.13 bin/platform leads advance <id-or-uuid> outreach_drafted
+python3.13 bin/platform leads prospect --limit 15
+python3.13 bin/platform leads prospect --min-score 60 --json
+python3.13 bin/platform leads prospect --csv /tmp/hn-prospects.csv
 ```
 
 The default lead project is `richmiles-xyz`; pass `--project` to select another configured Spark
 or slug. `leads advance` follows the status transitions enforced by Spark Swarm.
+
+`leads prospect` is read-only reconnaissance. It SSHes to the production droplet and queries the
+`jobtrends.hn_hiring_posts` table inside the Bullshit or Fit container, selecting recent HN hiring
+posts that mention both contract/freelance work and delivery-pipeline pain. It extracts a company,
+contact, links, and a pipeline-role hint; scores and deduplicates by company; and prints a ranked
+table with a footer. Use `--json` for machine output or `--csv PATH` to save the returned rows.
+The query uses the observed `source=hn` and `stream=hiring` values; `stream=wants_hired` is excluded,
+and a small raw-text filter removes clearly job-seeking posts that are mislabeled as hiring posts.
+It does not send email, create leads, or write to production data.
 
 ## Initial Server Setup
 
