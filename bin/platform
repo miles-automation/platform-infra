@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
+import html
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -13,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +93,34 @@ def sh_capture(cmd: list[str], *, cwd: Path | None, dry_run: bool, quiet: bool, 
         return ""
     proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, capture_output=True, text=True)
     if check and proc.returncode != 0:
+        raise SystemExit(proc.returncode)
+    return proc.stdout
+
+
+def sh_capture_stdin(
+    cmd: list[str],
+    stdin: str,
+    *,
+    cwd: Path | None,
+    dry_run: bool,
+    quiet: bool,
+    check: bool = True,
+) -> str:
+    rendered = shlex.join(cmd)
+    if not quiet:
+        print(f"+ {rendered} <stdin>", file=sys.stderr)
+    if dry_run:
+        return ""
+    proc = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        input=stdin,
+        capture_output=True,
+        text=True,
+    )
+    if check and proc.returncode != 0:
+        if proc.stderr:
+            _eprint(proc.stderr.rstrip())
         raise SystemExit(proc.returncode)
     return proc.stdout
 
@@ -975,6 +1007,608 @@ def _leads_query(args: argparse.Namespace, spark_id: int) -> str:
         params.append(("is_overdue", "true"))
     params.append(("limit", str(args.limit)))
     return urllib.parse.urlencode(params)
+
+
+PROSPECT_CONTAINER = "platform-infra-bullshit-or-fit-1"
+
+# The source/stream filter below is deliberate. A production inspection on 2026-08-02 found
+# source=hn only, with stream=hiring (6,051 rows) and stream=wants_hired (7,528 rows). The latter
+# is the job-seeker stream, so prospecting is limited to source=hn and stream=hiring.
+PROSPECT_REMOTE_SCRIPT = r"""
+import json
+import os
+
+import psycopg
+
+months = int(os.environ.get("PROSPECT_MONTHS", "6"))
+database_url = os.environ["DATABASE_URL"].replace("+psycopg", "", 1)
+
+def json_value(value):
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+with psycopg.connect(database_url) as conn:
+    with conn.cursor() as cur:
+        cur.execute('''
+            SELECT source, stream, COUNT(*)
+            FROM jobtrends.hn_hiring_posts
+            GROUP BY source, stream
+            ORDER BY source NULLS FIRST, stream NULLS FIRST
+        ''')
+        source_counts = {}
+        stream_counts = {}
+        for source, stream, count in cur.fetchall():
+            source_key = "<NULL>" if source is None else str(source)
+            stream_key = "<NULL>" if stream is None else str(stream)
+            source_counts[source_key] = source_counts.get(source_key, 0) + int(count)
+            stream_counts[stream_key] = stream_counts.get(stream_key, 0) + int(count)
+
+        cur.execute(
+            "SELECT now() - (%s * INTERVAL '1 month'), now()",
+            (months,),
+        )
+        window_start, window_end = cur.fetchone()
+
+        cur.execute(
+            '''
+            SELECT hn_id, raw_text, month, posted_at, source, stream
+            FROM jobtrends.hn_hiring_posts
+            WHERE posted_at >= %s
+              AND source = 'hn'
+              AND stream = 'hiring'
+              AND raw_text IS NOT NULL
+              AND raw_text ~* '(contract|freelance|fractional|consultan|part-time|contractor)'
+              AND raw_text ~* '(ci/cd|ci |cd |deploy|devops|platform eng|infrastructure|kubernetes|docker|release|sre|build system|pipeline)'
+            ORDER BY posted_at DESC, hn_id DESC
+            ''',
+            (window_start,),
+        )
+        rows = []
+        for hn_id, raw_text, month, posted_at, source, stream in cur.fetchall():
+            rows.append(
+                {
+                    "hn_id": int(hn_id),
+                    "raw_text": str(raw_text),
+                    "month": json_value(month),
+                    "posted_at": json_value(posted_at),
+                    "source": source,
+                    "stream": stream,
+                }
+            )
+
+print(json.dumps({
+    "source_counts": source_counts,
+    "stream_counts": stream_counts,
+    "window_start": json_value(window_start),
+    "window_end": json_value(window_end),
+    "rows": rows,
+}))
+"""
+
+_DIRECT_EMAIL_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+)
+_OBFUSCATED_EMAIL_RE = re.compile(
+    r"(?P<local>[A-Za-z0-9][A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]*)\s*"
+    r"(?:@|\[\s*at\s*\]|\(\s*at\s*\)|\bat\b)\s*"
+    r"(?P<domain>[A-Za-z0-9-]+(?:\s*(?:\.|\[\s*dot\s*\]|\(\s*dot\s*\)|\bdot\b)\s*[A-Za-z0-9-]+)+)",
+    re.IGNORECASE,
+)
+_URL_RE = re.compile(r"https?://[^\s<>\[\]{}\"']+", re.IGNORECASE)
+_PIPELINE_TERM_RE = re.compile(
+    r"ci/cd|\bci\b|\bcd\b|deploy\w*|devops|platform\s+eng\w*|"
+    r"infrastructure|kubernetes|docker|release\w*|sre|build\s+system|pipeline\w*",
+    re.IGNORECASE,
+)
+_JOB_SEEKER_RE = re.compile(
+    r"(?:^|\n)\s*(?:seeking\s+work|looking\s+for\s+(?:a\s+)?job|"
+    r"available\s+for\s+(?:work|hire)|open\s+to\s+work|who\s+wants\s+to\s+be\s+hired)\b"
+    r"|\b(?:i\s+am|i'm)\s+(?:an?\s+)?[a-z -]{2,60}\b(?:looking|seeking)\s+(?:for\s+work|a\s+job)\b"
+    r"|\b(?:graduate|student|i\s+am|i'm)\b.{0,100}"
+    r"\b(?:looking\s+for|seeking)\b.{0,100}\b(?:role|position|opportunit|job)s?\b"
+    r"|\b(?:i\s+am|i'm)\b.{0,160}\b(?:looking\s+for|seeking)\b.{0,100}"
+    r"\b(?:freelance|contract(?:or)?|part[- ]time|engagement|clients?)\b",
+    re.IGNORECASE,
+)
+
+
+def _prospect_months(value: str) -> int:
+    try:
+        months = int(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("months must be an integer") from e
+    if not 1 <= months <= 120:
+        raise argparse.ArgumentTypeError("months must be between 1 and 120")
+    return months
+
+
+def _prospect_score(value: str) -> int:
+    try:
+        score = int(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError("min-score must be an integer") from e
+    if not 0 <= score <= 100:
+        raise argparse.ArgumentTypeError("min-score must be between 0 and 100")
+    return score
+
+
+def _prospect_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _prospect_contact(raw_text: str) -> str | None:
+    candidates: list[tuple[int, str]] = []
+    direct = _DIRECT_EMAIL_RE.search(raw_text)
+    if direct:
+        candidates.append((direct.start(), direct.group(0)))
+
+    for obfuscated in _OBFUSCATED_EMAIL_RE.finditer(raw_text):
+        local = obfuscated.group("local")
+        raw_domain = obfuscated.group("domain")
+        match_text = obfuscated.group(0)
+        bracketed_at = re.search(r"\[\s*at\s*\]|\(\s*at\s*\)", match_text, re.IGNORECASE)
+        explicit_dot = re.search(
+            r"\bdot\b|\[\s*dot\s*\]|\(\s*dot\s*\)", raw_domain, re.IGNORECASE
+        )
+        if not bracketed_at and not explicit_dot:
+            # Bare "at" plus a literal domain is too easy to find in prose (for
+            # example, "works at dablam.co.uk"); direct @ addresses still match.
+            continue
+        # Avoid treating prose such as "comes at all. In one study" as an email. A
+        # whitespace-separated literal dot is sentence punctuation; obfuscated forms
+        # with spaces use the explicit word/token "dot" instead.
+        if re.search(r"\.\s+", raw_domain) and not re.search(
+            r"\bdot\b|\[\s*dot\s*\]|\(\s*dot\s*\)", raw_domain, re.IGNORECASE
+        ):
+            continue
+        domain = re.sub(
+            r"\s*(?:\.|\[\s*dot\s*\]|\(\s*dot\s*\)|\bdot\b)\s*",
+            ".",
+            raw_domain,
+            flags=re.IGNORECASE,
+        )
+        candidates.append((obfuscated.start(), f"{local}@{domain}"))
+        break
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1].lower()
+
+
+def _prospect_urls(raw_text: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in _URL_RE.finditer(raw_text):
+        url = match.group(0).rstrip(".,;:!?)]}")
+        key = url.casefold()
+        if url and key not in seen:
+            seen.add(key)
+            urls.append(url)
+        if len(urls) == 2:
+            break
+    return urls
+
+
+def _prospect_company(raw_text: str) -> tuple[str, bool, str]:
+    """Extract a company from the first line; otherwise use that line as a capped fallback."""
+    first_line = re.split(r"(?:\n|<p>|<br\s*/?>)", raw_text, maxsplit=1, flags=re.IGNORECASE)[0].strip()
+    first_line = re.sub(r"<[^>]+>", " ", first_line)
+    first_line = re.sub(r"^\s*hey\s+hn[!:,-]?\s*", "", first_line, flags=re.IGNORECASE)
+    first_line = re.sub(r"^(?:[-*•>#]+\s*)+", "", first_line)
+    first_line = first_line.replace("**", "").strip()
+    if not first_line:
+        return "Unknown company", False, "missing"
+
+    candidate = first_line
+    recognized = False
+    url_paren = re.search(r"\s*\(\s*https?://", candidate, re.IGNORECASE)
+    if url_paren:
+        candidate = candidate[:url_paren.start()]
+        recognized = True
+
+    for separator in (r"\s*\|\s*", r"\s+(?:—|–|-)\s+"):
+        parts = re.split(separator, candidate, maxsplit=1)
+        if len(parts) == 2:
+            candidate = parts[0]
+            recognized = True
+            break
+
+    hiring_prefix = re.search(
+        r"\s+(?:is\s+)?(?:hiring|seeking|looking\s+for)\b",
+        candidate,
+        re.IGNORECASE,
+    )
+    if hiring_prefix:
+        candidate = candidate[:hiring_prefix.start()]
+        recognized = True
+
+    role_like = re.search(
+        r"\b(?:engineer|developer|scientist|manager|designer|architect|technician)\b",
+        candidate,
+        re.IGNORECASE,
+    )
+    if role_like:
+        joined_company = re.search(
+            r"\bjoin\s+([A-Z][A-Za-z0-9&.'·-]*(?:\s+[A-Z][A-Za-z0-9&.'·-]*){0,5})\b",
+            raw_text,
+        )
+        if joined_company:
+            candidate = joined_company.group(1)
+            recognized = True
+
+    candidate = re.sub(r"\s+", " ", candidate).strip(" -—–|:")
+    if not candidate:
+        candidate = first_line
+        recognized = False
+    if len(candidate) > 120:
+        candidate = candidate[:117].rstrip() + "..."
+
+    generic = re.match(r"^(?:we|we're|our|looking|join|hiring|hello|hi)\b", candidate, re.IGNORECASE)
+    usable = bool(candidate) and not bool(generic)
+    return candidate, usable, "delimiter" if recognized else "fallback"
+
+
+def _prospect_normalized_company(company: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", company.casefold()).strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def _prospect_role_hint(raw_text: str) -> str:
+    matched = _PIPELINE_TERM_RE.search(raw_text)
+    if not matched:
+        return ""
+    start = max(0, matched.start() - 80)
+    end = min(len(raw_text), matched.end() + 120)
+    snippet = re.sub(r"<[^>]+>", " ", raw_text[start:end])
+    snippet = re.sub(r"\s+", " ", snippet).strip()
+    if start:
+        snippet = "..." + snippet
+    if end < len(raw_text):
+        snippet += "..."
+    return snippet
+
+
+def _prospect_is_job_seeker(raw_text: str) -> bool:
+    return bool(_JOB_SEEKER_RE.search(raw_text))
+
+
+def _prospect_score_post(raw_text: str, posted_at: datetime | None, now: datetime, has_contact: bool) -> int:
+    text = raw_text.casefold()
+    age_months = 6.0
+    if posted_at is not None:
+        age_days = max(0.0, (now - posted_at).total_seconds() / 86400)
+        age_months = age_days / 30.4375
+
+    # Weighting totals 100 before penalties: recency 25, contract/fractional 20,
+    # pipeline/deploy pain 25, contact 15, small-company signals 10, remote 5.
+    # Penalties: giant-company signals -10 and FTE-only/negative contract language -10.
+    score = round(25 * max(0.0, 1.0 - age_months / 6.0))
+    contract_groups = (
+        r"\bcontract(?:or|ing)?\b",
+        r"\bfreelance\w*\b",
+        r"\bfractional\b",
+        r"\bconsultan\w*\b",
+        r"\bpart[- ]time\b",
+    )
+    contract_hits = sum(bool(re.search(pattern, text)) for pattern in contract_groups)
+    score += min(20, 16 + max(0, contract_hits - 1) * 2) if contract_hits else 0
+
+    pipeline_terms = (
+        r"ci/cd|\bci\b|\bcd\b",
+        r"deploy\w*|release\w*|pipeline\w*|build system",
+        r"devops|platform\s+eng\w*|infrastructure|kubernetes|docker|sre",
+    )
+    pipeline_hits = sum(bool(re.search(pattern, text)) for pattern in pipeline_terms)
+    score += min(18, pipeline_hits * 9)
+    if re.search(
+        r"\b(?:set up|setup|improv\w*|maintain\w*|migrat\w*|automat\w*|"
+        r"broken|reliab\w*|rollback|monitor\w*|observab\w*)\b",
+        text,
+    ):
+        score += 7
+    if has_contact:
+        score += 15
+    if re.search(
+        r"\b(?:small team|seed|pre-seed|early[- ]stage|startup|bootstrapped|series a)\b",
+        text,
+    ):
+        score += 10
+    if re.search(r"\b(?:remote|distributed|work from anywhere|async|anywhere in the world)\b", text):
+        score += 5
+    if re.search(
+        r"\b(?:fortune\s*500|publicly traded|enterprise|10,000\+?|thousands of employees|global corporation)\b",
+        text,
+    ):
+        score -= 10
+    if re.search(
+        r"\b(?:full[- ]time only|only full[- ]time|no contract(?:ors)?|not (?:offering|a) contract)\b",
+        text,
+    ):
+        score -= 10
+    return max(0, min(100, score))
+
+
+def _prospect_counts_text(counts: Any) -> str:
+    if not isinstance(counts, dict) or not counts:
+        return "-"
+    return ", ".join(f"{key}={int(value):,}" for key, value in counts.items())
+
+
+def _prospect_public_result(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: row[key]
+        for key in (
+            "rank",
+            "score",
+            "company",
+            "contact",
+            "urls",
+            "role_hint",
+            "month",
+            "posted_at",
+            "seen_count",
+            "hn_id",
+            "hn_url",
+            "source",
+            "stream",
+        )
+    }
+
+
+def _prospect_summary(
+    remote: dict[str, Any],
+    *,
+    excluded_job_seeker_count: int,
+    matched_company_count: int,
+    matched_contact_count: int,
+    matched_company_contact_count: int,
+    deduped: list[dict[str, Any]],
+    after_min_score: list[dict[str, Any]],
+    returned: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    usable_contact_after_dedup = sum(bool(row["contact"]) for row in deduped)
+    usable_company_contact_after_dedup = sum(
+        bool(row["_company_usable"] and row["contact"]) for row in deduped
+    )
+    return {
+        "total_matched": int(remote.get("total_matched", 0)),
+        "excluded_job_seekers": excluded_job_seeker_count,
+        "eligible_matched": int(remote.get("total_matched", 0)) - excluded_job_seeker_count,
+        "after_dedup": len(deduped),
+        "after_min_score": len(after_min_score),
+        "returned": len(returned),
+        "limit": args.limit,
+        "min_score": args.min_score,
+        "capped": len(returned) < len(after_min_score),
+        "usable_contact_after_dedup": usable_contact_after_dedup,
+        "usable_company_after_match": matched_company_count,
+        "usable_contact_after_match": matched_contact_count,
+        "usable_company_and_contact_after_match": matched_company_contact_count,
+        "usable_company_and_contact_after_dedup": usable_company_contact_after_dedup,
+        "date_window": {
+            "start": remote.get("window_start"),
+            "end": remote.get("window_end"),
+        },
+        "source_counts": remote.get("source_counts", {}),
+        "stream_counts": remote.get("stream_counts", {}),
+        "filter": "source=hn, stream=hiring; stream=wants_hired excluded",
+    }
+
+
+def _write_prospect_csv(path_value: str, rows: list[dict[str, Any]]) -> None:
+    fieldnames = [
+        "rank",
+        "score",
+        "company",
+        "contact",
+        "urls",
+        "role_hint",
+        "month",
+        "posted_at",
+        "seen_count",
+        "hn_id",
+        "hn_url",
+        "source",
+        "stream",
+    ]
+    path = Path(path_value)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            output = _prospect_public_result(row)
+            output["urls"] = " | ".join(output["urls"])
+            writer.writerow(output)
+
+
+def _print_prospect_table(rows: list[dict[str, Any]]) -> None:
+    headers = ["RANK", "SCORE", "COMPANY", "CONTACT", "MONTH", "SEEN", "HN_URL"]
+    values = [
+        [
+            str(row["rank"]),
+            str(row["score"]),
+            row["company"] or "-",
+            row["contact"] or "-",
+            str(row["month"] or "-"),
+            str(row["seen_count"]),
+            row["hn_url"],
+        ]
+        for row in rows
+    ]
+    widths = [
+        max([len(header), *(len(row[index]) for row in values)])
+        for index, header in enumerate(headers)
+    ]
+    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    print("  ".join("-" * width for width in widths))
+    for row in values:
+        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+    if not values:
+        print("No prospects found.")
+
+
+def cmd_leads_prospect(args: argparse.Namespace) -> None:
+    remote_payload = _prospect_remote_query(args)
+    if args.dry_run:
+        return
+    try:
+        remote = json.loads(remote_payload)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"Unexpected prospect query response: invalid JSON ({e})") from e
+    if not isinstance(remote, dict) or not isinstance(remote.get("rows"), list):
+        raise SystemExit("Unexpected prospect query response: missing rows list")
+
+    rows = remote["rows"]
+    remote["total_matched"] = len(rows)
+    now = _prospect_timestamp(remote.get("window_end")) or datetime.now(timezone.utc)
+    deduped: dict[str, dict[str, Any]] = {}
+    matched_company_count = 0
+    matched_contact_count = 0
+    matched_company_contact_count = 0
+    excluded_job_seeker_count = 0
+
+    for raw_row in rows:
+        if not isinstance(raw_row, dict):
+            continue
+        raw_text = html.unescape(str(raw_row.get("raw_text") or ""))
+        if _prospect_is_job_seeker(raw_text):
+            excluded_job_seeker_count += 1
+            continue
+        company, company_usable, company_method = _prospect_company(raw_text)
+        contact = _prospect_contact(raw_text)
+        if company_usable:
+            matched_company_count += 1
+        if contact:
+            matched_contact_count += 1
+        if company_usable and contact:
+            matched_company_contact_count += 1
+        posted_at = _prospect_timestamp(raw_row.get("posted_at"))
+        hn_id = int(raw_row.get("hn_id"))
+        row: dict[str, Any] = {
+            "score": _prospect_score_post(raw_text, posted_at, now, bool(contact)),
+            "company": company,
+            "contact": contact,
+            "urls": _prospect_urls(raw_text),
+            "role_hint": _prospect_role_hint(raw_text),
+            "month": raw_row.get("month"),
+            "posted_at": raw_row.get("posted_at"),
+            "seen_count": 1,
+            "hn_id": hn_id,
+            "hn_url": f"https://news.ycombinator.com/item?id={hn_id}",
+            "source": raw_row.get("source"),
+            "stream": raw_row.get("stream"),
+            "_posted_at": posted_at,
+            "_company_usable": company_usable,
+            "_company_method": company_method,
+        }
+        key = _prospect_normalized_company(company)
+        if not key:
+            key = f"unknown:{hn_id}"
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = row
+        else:
+            existing["seen_count"] += 1
+            existing_posted = existing.get("_posted_at")
+            if row["_posted_at"] and (existing_posted is None or row["_posted_at"] > existing_posted):
+                row["seen_count"] = existing["seen_count"]
+                deduped[key] = row
+
+    deduped_rows = list(deduped.values())
+    deduped_rows.sort(
+        key=lambda row: (
+            row["score"],
+            row.get("_posted_at") or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    after_min_score = [row for row in deduped_rows if row["score"] >= args.min_score]
+    returned = after_min_score[: args.limit]
+    for rank, row in enumerate(returned, start=1):
+        row["rank"] = rank
+
+    summary = _prospect_summary(
+        remote,
+        excluded_job_seeker_count=excluded_job_seeker_count,
+        matched_company_count=matched_company_count,
+        matched_contact_count=matched_contact_count,
+        matched_company_contact_count=matched_company_contact_count,
+        deduped=deduped_rows,
+        after_min_score=after_min_score,
+        returned=returned,
+        args=args,
+    )
+    public_rows = [_prospect_public_result(row) for row in returned]
+
+    if args.csv:
+        try:
+            _write_prospect_csv(args.csv, returned)
+        except OSError as e:
+            raise SystemExit(f"Could not write CSV {args.csv!r}: {e}") from e
+
+    if args.json:
+        print(json.dumps({"results": public_rows, "summary": summary}, indent=2, sort_keys=True))
+        return
+
+    _print_prospect_table(returned)
+    if args.csv:
+        print(f"CSV: {args.csv}")
+    date_window = summary["date_window"]
+    window_text = f"{date_window.get('start', '-')} to {date_window.get('end', '-')}"
+    print(
+        f"\nTotal matched: {summary['total_matched']} | job-seeker exclusions: {summary['excluded_job_seekers']} "
+        f"| after-dedup: {summary['after_dedup']} "
+        f"| usable contact: {summary['usable_contact_after_dedup']} "
+        f"| date window: {window_text}"
+    )
+    print(
+        f"Returned: {summary['returned']} of {summary['after_min_score']} after --min-score {args.min_score}"
+        + (f" (capped by --limit {args.limit})" if summary["capped"] else "")
+    )
+    print(
+        "Extraction hits across eligible matches: "
+        f"company={summary['usable_company_after_match']}/{summary['eligible_matched']}, "
+        f"contact={summary['usable_contact_after_match']}/{summary['eligible_matched']}, "
+        f"company+contact={summary['usable_company_and_contact_after_match']}/{summary['eligible_matched']}"
+    )
+    print(
+        f"Observed source values: {_prospect_counts_text(summary['source_counts'])}; "
+        f"stream values: {_prospect_counts_text(summary['stream_counts'])}; "
+        "filter used: source=hn, stream=hiring (wants_hired excluded)."
+    )
+
+
+def _prospect_remote_query(args: argparse.Namespace) -> str:
+    cmd = [
+        "ssh",
+        prod_host(args),
+        "docker",
+        "exec",
+        "-i",
+        PROSPECT_CONTAINER,
+        "python",
+        "-",
+    ]
+    script = f"import os\nos.environ['PROSPECT_MONTHS'] = {str(args.months)!r}\n" + PROSPECT_REMOTE_SCRIPT
+    return sh_capture_stdin(
+        cmd,
+        script,
+        cwd=None,
+        dry_run=args.dry_run,
+        quiet=args.quiet,
+    )
 
 
 def _resolve_leads_spark_id(args: argparse.Namespace, base: str, api_key: str) -> int:
@@ -3083,6 +3717,33 @@ def build_parser() -> argparse.ArgumentParser:
     leads_advance.add_argument("lead_id", help="Lead numeric ID or UUID")
     leads_advance.add_argument("status", choices=LEAD_STATUSES, help="Target lead status")
     leads_advance.set_defaults(func=cmd_leads_advance)
+
+    leads_prospect = leads_sub.add_parser(
+        "prospect",
+        help="Mine HN Who is hiring posts for contract pipeline prospects",
+        parents=[common],
+    )
+    leads_prospect.add_argument(
+        "--months",
+        type=_prospect_months,
+        default=6,
+        help="Look back this many months (default: 6)",
+    )
+    leads_prospect.add_argument(
+        "--limit",
+        type=_lead_limit,
+        default=100,
+        help="Maximum prospects to print (default: 100)",
+    )
+    leads_prospect.add_argument(
+        "--min-score",
+        type=_prospect_score,
+        default=0,
+        help="Only return prospects scoring at least N (default: 0)",
+    )
+    leads_prospect.add_argument("--json", action="store_true", help="Output JSON instead of a table")
+    leads_prospect.add_argument("--csv", metavar="PATH", help="Also write the returned rows as CSV")
+    leads_prospect.set_defaults(func=cmd_leads_prospect)
 
     # -- canvas ---------------------------------------------------------------
     canvas = sub.add_parser("canvas", help="UI Canvas: capture & compare screens across all sparks", parents=[common])
