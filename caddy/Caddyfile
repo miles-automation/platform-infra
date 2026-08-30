@@ -87,6 +87,7 @@ www.sparkswarm.com {
 
 # Esher's Codex - Math curriculum app
 esherscodex.com {
+	import block_lfi
 	encode zstd gzip
 	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy eshers-codex:8000
