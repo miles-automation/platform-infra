@@ -30,3 +30,7 @@ with) the copy tracked here.
   rather than HTTP, because bare-domain Caddy sites auto-redirect HTTP→HTTPS with
   a 308 that `curl -f` treats as success — an HTTP probe would pass even with the
   backend down, defeating the rollout's auto-rollback.
+- Deploy events resolve the Spark identifier from `spark_slug` when a platform
+  project key differs from its Spark (for example `human-index-v2` can point at
+  `human-index`). Keep that mapping in the workspace `platform.toml`; the CLI
+  retains a compatibility alias for the current Human Index v2 takeover.

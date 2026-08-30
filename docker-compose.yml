@@ -368,14 +368,17 @@ services:
       REVE_API_KEY: ${REVE_API_KEY:-}
       REVE_API_URL: ${REVE_API_URL:-}
       # Background loops
-      FLEET_DIGEST_ENABLED: ${FLEET_DIGEST_ENABLED:-false}
+      # Safe fleet reconciliation defaults: digest/sync/review are read-only or
+      # review-producing. RSI action execution remains explicitly disabled.
+      FLEET_DIGEST_ENABLED: ${FLEET_DIGEST_ENABLED:-true}
       FLEET_DIGEST_HOUR_UTC: ${FLEET_DIGEST_HOUR_UTC:-13}
-      GITHUB_SYNC_ENABLED: ${GITHUB_SYNC_ENABLED:-false}
+      GITHUB_SYNC_ENABLED: ${GITHUB_SYNC_ENABLED:-true}
       GITHUB_SYNC_INTERVAL_SECONDS: ${GITHUB_SYNC_INTERVAL_SECONDS:-3600}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      SPARK_HEALTH_REVIEWER_ENABLED: ${SPARK_HEALTH_REVIEWER_ENABLED:-false}
+      SPARK_HEALTH_REVIEWER_ENABLED: ${SPARK_HEALTH_REVIEWER_ENABLED:-true}
       SPARK_HEALTH_REVIEWER_INTERVAL_SECONDS: ${SPARK_HEALTH_REVIEWER_INTERVAL_SECONDS:-3600}
-      EVALUATION_DIGEST_ENABLED: ${EVALUATION_DIGEST_ENABLED:-false}
+      EVALUATION_DIGEST_ENABLED: ${EVALUATION_DIGEST_ENABLED:-true}
+      FLEET_WORKER_STALE_AFTER_SECONDS: ${FLEET_WORKER_STALE_AFTER_SECONDS:-900}
       EVALUATION_DIGEST_EMAIL_TO: ${EVALUATION_DIGEST_EMAIL_TO:-}
       EVALUATION_DIGEST_EMAIL_FROM: ${EVALUATION_DIGEST_EMAIL_FROM:-}
       MXROUTE_SMTP_HOST: ${MXROUTE_SMTP_HOST:-}
@@ -455,6 +458,10 @@ services:
     command: ["python", "-m", "app.lead_scheduler"]
     environment:
       DATABASE_URL: postgresql://${SPARK_SWARM_DB_USER:-spark_swarm}:${SPARK_SWARM_DB_PASSWORD:?Set SPARK_SWARM_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${SPARK_SWARM_DB_NAME:-spark_swarm_db}
+      SPARK_SWARM_API_URL: http://spark-swarm:8000/api/v1
+      # Optional during migration; without it the scheduler still runs but
+      # worker-status correctly reports heartbeat state as missing.
+      SPARK_SWARM_API_KEY: ${LEAD_SCHEDULER_API_KEY:-}
       LEADS_WORKER_INTERVAL_SECONDS: ${LEADS_WORKER_INTERVAL_SECONDS:-300}
       MATRIX_HOMESERVER_URL: ${MATRIX_HOMESERVER_URL:-}
       MATRIX_ACCESS_TOKEN: ${MATRIX_ACCESS_TOKEN:-}
