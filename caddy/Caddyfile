@@ -1,6 +1,15 @@
+# --- Security: block path-traversal / absolute-filesystem reads (LFI) ---
+# Mitigation for the SPA catch-all bug where `STATIC_DIR / full_path` serves
+# absolute paths (//etc/passwd, //proc/self/environ). Import into app blocks.
+(block_lfi) {
+	@lfi path_regexp lfi (?i)(^//|/\.\.|%2e%2e|%2f|%5c|^/(etc|proc|sys|root|boot|dev|var|home)/)
+	respond @lfi 404
+}
+
 # Directory-mounted (./caddy:/etc/caddy); changes propagate via `prod sync infra` + `caddy reload`. Verified 2026-06-08.
 # IEOMD - Time-locked secret delivery
 ieomd.com {
+	import block_lfi
 	encode zstd gzip
 	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy ieomd:8000
@@ -23,6 +32,7 @@ chat.sparkswarm.com {
 
 # Call of the Noodle - Noodle bar rating app
 callofthenoodle.com {
+	import block_lfi
 	encode zstd gzip
 	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy noodle:8000
@@ -54,6 +64,7 @@ www.richmiles.xyz {
 
 # Bullshit or Fit
 bullshitorfit.com {
+	import block_lfi
 	encode zstd gzip
 	header /assets/* Cache-Control "public, max-age=31536000, immutable"
 	reverse_proxy bullshit-or-fit:8000
@@ -97,6 +108,7 @@ www.milesautomation.com {
 }
 
 forwhenever.com {
+	import block_lfi
 	reverse_proxy for-whenever:8000
 }
 
