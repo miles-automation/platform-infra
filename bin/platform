@@ -705,6 +705,26 @@ def cmd_secrets_delete(args: argparse.Namespace) -> None:
         raise SystemExit(f"Unexpected status: {status}")
 
 
+_DOTENV_LAST_VALUE_PY = r'''import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+if not path.exists():
+    sys.exit(0)
+selected = ""
+for raw in path.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    if k.strip() != "SPARK_SWARM_API_KEY":
+        continue
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+        v = v[1:-1]
+    selected = v
+sys.stdout.write(selected)
+'''
+
+
 def cmd_prod_secrets_apply(args: argparse.Namespace) -> None:
     require_yes(args, "apply SparkSwarm-exported secrets to prod .env")
     host = prod_host(args)
@@ -731,22 +751,7 @@ touch "$ENV_FILE"
 # Load SPARK_SWARM_API_KEY from the existing dotenv without 'source' (dotenv is not bash).
 API_KEY="$(
 python3 - "$ENV_FILE" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-if not path.exists():
-    sys.exit(0)
-for raw in path.read_text().splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        continue
-    k, v = line.split("=", 1)
-    if k.strip() != "SPARK_SWARM_API_KEY":
-        continue
-    v = v.strip()
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('\"', \"'\"):
-        v = v[1:-1]
-    sys.stdout.write(v)
-    break
+{_DOTENV_LAST_VALUE_PY}
 PY
 )"
 if [ -z "$API_KEY" ]; then
@@ -881,22 +886,7 @@ def _sparkswarm_api_key_from_prod_env(args: argparse.Namespace) -> str | None:
     remote = f"""
 set -euo pipefail
 python3 - {shlex.quote(env_path)} <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-if not path.exists():
-    sys.exit(0)
-for raw in path.read_text().splitlines():
-    line = raw.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        continue
-    k, v = line.split("=", 1)
-    if k.strip() != "SPARK_SWARM_API_KEY":
-        continue
-    v = v.strip()
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-        v = v[1:-1]
-    sys.stdout.write(v)
-    break
+{_DOTENV_LAST_VALUE_PY}
 PY
 """
     out = sh_capture(["ssh", host, remote], cwd=None, dry_run=args.dry_run, quiet=True, check=False).strip()
