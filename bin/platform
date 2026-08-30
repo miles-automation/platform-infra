@@ -920,6 +920,10 @@ def _sparkswarm_resolve_spark_id(*, base: str, api_key: str, slug: str) -> int |
 
 
 def _sparkswarm_project_slug(cfg: dict[str, Any], project_key: str) -> str:
+    # Keep the current v1/v2 takeover linked correctly even when an older
+    # workspace config has not yet added the explicit ``spark_slug`` field.
+    # A config value always wins and is the preferred source of truth.
+    legacy_aliases = {"human-index-v2": "human-index"}
     projects = cfg.get("projects")
     if isinstance(projects, dict):
         project = projects.get(project_key)
@@ -927,7 +931,7 @@ def _sparkswarm_project_slug(cfg: dict[str, Any], project_key: str) -> str:
             spark_slug = project.get("spark_slug")
             if isinstance(spark_slug, str) and spark_slug.strip():
                 return spark_slug.strip()
-    return project_key
+    return legacy_aliases.get(project_key, project_key)
 
 
 def _sparkswarm_api_error_detail(error: urllib.error.HTTPError) -> str:
@@ -2879,9 +2883,16 @@ def cmd_prod_rollout(args: argparse.Namespace) -> None:
     base = _sparkswarm_api_base(args)
     api_key = _sparkswarm_api_key(args) if not args.dry_run else None
     spark_id = None
+    spark_slug: str | None = None
     actor = "platform-cli"
-    if api_key and project_key:
-        spark_id = _sparkswarm_resolve_spark_id(base=base, api_key=api_key, slug=project_key)
+    if project_key:
+        # A platform project key identifies repository/infra wiring; it may
+        # intentionally differ from the Spark slug (for example human-index-v2
+        # deploys the human-index Spark). Keep deploy events attached to the
+        # configured Spark instead of silently orphaning them.
+        spark_slug = _sparkswarm_project_slug(cfg, project_key)
+        if api_key:
+            spark_id = _sparkswarm_resolve_spark_id(base=base, api_key=api_key, slug=spark_slug)
 
     # Health check domain: prefer project config (first domain), else require explicit.
     health_domain = args.health_domain
@@ -2918,6 +2929,7 @@ def cmd_prod_rollout(args: argparse.Namespace) -> None:
     rollout_metadata_base: dict[str, Any] = {
         "target": args.target,
         "project": project_key,
+        "spark_slug": spark_slug,
         "service": service,
         "tag": args.tag,
         "previous_tag": previous_tag or None,
