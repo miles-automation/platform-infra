@@ -1,3 +1,13 @@
+x-spark-swarm-hardening: &spark-swarm-hardening
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+    - /app/data:rw,noexec,nosuid,size=16m
+
 services:
   # Reverse proxy with automatic HTTPS
   caddy:
@@ -179,7 +189,7 @@ services:
       SPARK_SWARM_OAUTH_CLIENT_SECRET: ${HUMAN_INDEX_SPARK_SWARM_OAUTH_CLIENT_SECRET:?Set HUMAN_INDEX_SPARK_SWARM_OAUTH_CLIENT_SECRET in .env}
       SPARK_SWARM_OAUTH_REDIRECT_URI: ${HUMAN_INDEX_SPARK_SWARM_OAUTH_REDIRECT_URI:-https://humanindex.io/auth/callback}
       SPARK_SWARM_API_URL: ${SPARK_SWARM_API_URL:-http://spark-swarm:8000/api/v1}
-      SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY:-}
+      SPARK_SWARM_API_KEY: ${HUMAN_INDEX_SPARK_SWARM_API_KEY:?Set a human-index scoped Spark Swarm key}
       SENTRY_DSN: ${HUMAN_INDEX_SENTRY_DSN:-}
       SENTRY_TRACES_SAMPLE_RATE: ${HUMAN_INDEX_SENTRY_TRACES_SAMPLE_RATE:-0.0}
       CANVAS_API_KEY: ${CANVAS_API_KEY:-}
@@ -263,7 +273,7 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     environment:
-      SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY}
+      SPARK_SWARM_API_KEY: ${RICHMILES_XYZ_SPARK_SWARM_API_KEY:?Set a richmiles-xyz scoped Spark Swarm key}
       SPARK_SWARM_API_URL: http://spark-swarm:8000/api/v1
     networks:
       - internal
@@ -274,7 +284,7 @@ services:
     restart: unless-stopped
     mem_limit: 128m
     environment:
-      SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY}
+      SPARK_SWARM_API_KEY: ${MILES_AUTOMATION_SPARK_SWARM_API_KEY:?Set a miles-automation scoped Spark Swarm key}
       SPARK_SWARM_API_URL: http://spark-swarm:8000/api/v1
     networks:
       - internal
@@ -328,7 +338,8 @@ services:
 
   # Spark Swarm - Project ecosystem dashboard
   spark-swarm:
-    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    <<: *spark-swarm-hardening
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:?Set SPARK_SWARM_IMAGE_TAG to an immutable sha-* tag}
     restart: unless-stopped
     mem_limit: 512m
     environment:
@@ -337,6 +348,10 @@ services:
       SPARK_SWARM_MASTER_KEY: ${SPARK_SWARM_MASTER_KEY:?Set SPARK_SWARM_MASTER_KEY in .env}
       SPARK_SWARM_API_KEY: ${SPARK_SWARM_API_KEY:?Set SPARK_SWARM_API_KEY in .env}
       SPARK_SWARM_AUTH_DISABLED: ${SPARK_SWARM_AUTH_DISABLED:-false}
+      ENVIRONMENT: production
+      SPARK_SWARM_STRICT_STARTUP_VALIDATION: "true"
+      SPARK_SWARM_OAUTH_JWT_PRIVATE_KEY_PEM: ${SPARK_SWARM_OAUTH_JWT_PRIVATE_KEY_PEM:?Set a persistent OAuth RSA private key}
+      SPARK_SWARM_OAUTH_MAGIC_LINK_SECRET: ${SPARK_SWARM_OAUTH_MAGIC_LINK_SECRET:?Set a dedicated token-signing secret}
       CANVAS_API_KEY: ${CANVAS_API_KEY:-}
       UMAMI_DATABASE_URL: postgresql://${UMAMI_DB_USER:-umami}:${UMAMI_DB_PASSWORD:?Set UMAMI_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${UMAMI_DB_NAME:-umami_db}
       UPTIME_STATE_PATH: /data/uptime/state.json
@@ -401,7 +416,8 @@ services:
 
   # Fleet uptime prober (logs Spark Swarm events + Matrix alerts)
   uptime-prober:
-    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    <<: *spark-swarm-hardening
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:?Set SPARK_SWARM_IMAGE_TAG to an immutable sha-* tag}
     restart: unless-stopped
     mem_limit: 96m
     command: ["python", "-m", "app.uptime_prober"]
@@ -427,7 +443,8 @@ services:
 
   # Email monitor (IMAP polling + Matrix notifications for new mail)
   email-monitor:
-    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    <<: *spark-swarm-hardening
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:?Set SPARK_SWARM_IMAGE_TAG to an immutable sha-* tag}
     restart: unless-stopped
     mem_limit: 96m
     command: ["python", "-m", "app.email_monitor"]
@@ -456,7 +473,8 @@ services:
 
   # Lead outreach scheduler (SLA reminders/overdue flags + Matrix notifications)
   lead-scheduler:
-    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    <<: *spark-swarm-hardening
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:?Set SPARK_SWARM_IMAGE_TAG to an immutable sha-* tag}
     restart: unless-stopped
     mem_limit: 192m
     command: ["python", "-m", "app.lead_scheduler"]
@@ -476,9 +494,31 @@ services:
       spark-swarm:
         condition: service_started
 
+  # Constrain Docker Engine access to read-only container inspection. The
+  # log-shipper never receives the host's root-equivalent Docker socket.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+    restart: unless-stopped
+    mem_limit: 64m
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      CONTAINERS: 1
+      POST: 0
+      LOG_LEVEL: warning
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    tmpfs:
+      - /run:rw,noexec,nosuid,size=8m
+      - /tmp:rw,noexec,nosuid,size=8m
+    networks:
+      - internal
+
   # Container log shipper (ships ERROR/CRITICAL lines to Spark Swarm events API)
   log-shipper:
-    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:-latest}
+    <<: *spark-swarm-hardening
+    image: ghcr.io/miles-automation/spark-swarm:${SPARK_SWARM_IMAGE_TAG:?Set SPARK_SWARM_IMAGE_TAG to an immutable sha-* tag}
     restart: unless-stopped
     mem_limit: 96m
     command: ["python", "-m", "app.log_shipper"]
@@ -490,13 +530,15 @@ services:
       LOG_SHIPPER_LEVEL_FILTER: ${LOG_SHIPPER_LEVEL_FILTER:-ERROR,CRITICAL,FATAL}
       LOG_SHIPPER_MAX_PER_HOUR: ${LOG_SHIPPER_MAX_PER_HOUR:-50}
       LOG_SHIPPER_STATE_PATH: /data/log-shipper/state.json
+      LOG_SHIPPER_DOCKER_ENDPOINT: http://docker-socket-proxy:2375
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - log_shipper_state:/data/log-shipper
     networks:
       - internal
     depends_on:
       spark-swarm:
+        condition: service_started
+      docker-socket-proxy:
         condition: service_started
 
 networks:
