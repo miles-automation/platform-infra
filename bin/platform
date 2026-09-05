@@ -912,8 +912,17 @@ def _sparkswarm_api_key(args: argparse.Namespace) -> str | None:
 
 
 def _sparkswarm_resolve_spark_id(*, base: str, api_key: str, slug: str) -> int | None:
+    # Deploy-event bookkeeping must never abort a deploy. A scoped key (the usual
+    # ~/.zshrc export) gets 403 here; treat any lookup failure as "no Spark".
     url = f"{base}/sparks/{urllib.parse.quote(slug)}"
-    status, data = _http_json_allow_404(method="GET", url=url, headers={"X-API-Key": api_key})
+    try:
+        status, data = _http_json_allow_404(method="GET", url=url, headers={"X-API-Key": api_key})
+    except urllib.error.HTTPError as e:
+        _eprint(f"warn: Spark Swarm lookup for {slug} failed ({e.code}: {_sparkswarm_api_error_detail(e)}); deploy events will not be linked to a Spark")
+        return None
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        _eprint(f"warn: Spark Swarm lookup for {slug} failed ({e}); deploy events will not be linked to a Spark")
+        return None
     if status == 404 or not data:
         return None
     spark_id = data.get("id")
@@ -1741,18 +1750,25 @@ def _sparkswarm_log_event(
     metadata: dict[str, Any],
     actor: str,
 ) -> None:
-    _http_json(
-        method="POST",
-        url=f"{base}/events",
-        headers={"X-API-Key": api_key},
-        data={
-            "type": event_type,
-            "message": message,
-            "spark_id": spark_id,
-            "metadata": json.dumps(metadata, sort_keys=True),
-            "actor": actor,
-        },
-    )
+    # Best effort: a failed event post is reported, never raised, so it cannot
+    # interrupt the deploy it describes.
+    try:
+        _http_json(
+            method="POST",
+            url=f"{base}/events",
+            headers={"X-API-Key": api_key},
+            data={
+                "type": event_type,
+                "message": message,
+                "spark_id": spark_id,
+                "metadata": json.dumps(metadata, sort_keys=True),
+                "actor": actor,
+            },
+        )
+    except urllib.error.HTTPError as e:
+        _eprint(f"warn: Spark Swarm event '{event_type}' not recorded ({e.code}: {_sparkswarm_api_error_detail(e)})")
+    except (urllib.error.URLError, TimeoutError, ValueError) as e:
+        _eprint(f"warn: Spark Swarm event '{event_type}' not recorded ({e})")
 
 
 def _sparkswarm_put_spark_setting(*, base: str, api_key: str, slug: str, key: str, value: str) -> None:
