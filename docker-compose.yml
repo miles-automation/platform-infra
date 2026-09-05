@@ -9,6 +9,34 @@ x-spark-swarm-hardening: &spark-swarm-hardening
     - /app/data:rw,noexec,nosuid,size=16m
 
 services:
+  # Weaver — phone inbox and MCP communication relay
+  weaver:
+    image: ghcr.io/miles-automation/weaver:${WEAVER_IMAGE_TAG:-sha-c456b94}
+    restart: unless-stopped
+    mem_limit: 192m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      WEAVER_ORIGIN: https://weaver.sparkswarm.com
+      WEAVER_DB: /app/data/weaver.sqlite
+      WEAVER_OWNER_TOKEN: ${WEAVER_OWNER_TOKEN:?Set WEAVER_OWNER_TOKEN via Spark Swarm}
+      VAPID_PUBLIC_KEY: ${WEAVER_VAPID_PUBLIC_KEY:?Set WEAVER_VAPID_PUBLIC_KEY via Spark Swarm}
+      VAPID_PRIVATE_KEY: ${WEAVER_VAPID_PRIVATE_KEY:?Set WEAVER_VAPID_PRIVATE_KEY via Spark Swarm}
+      VAPID_SUBJECT: ${WEAVER_VAPID_SUBJECT:?Set WEAVER_VAPID_SUBJECT via Spark Swarm}
+    volumes:
+      - weaver_data:/app/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   # Reverse proxy with automatic HTTPS
   caddy:
     image: caddy:2-alpine
@@ -546,6 +574,7 @@ networks:
     driver: bridge
 
 volumes:
+  weaver_data:
   postgres_data:
   caddy_data:
   caddy_config:
