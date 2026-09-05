@@ -19,6 +19,13 @@ www.ieomd.com {
 	redir https://ieomd.com{uri} permanent
 }
 
+# Weaver - Agent communication
+weaver.sparkswarm.com {
+	import block_lfi
+	encode zstd gzip
+	reverse_proxy weaver:8787
+}
+
 # Umami - Analytics
 analytics.sparkswarm.com {
 	encode zstd gzip

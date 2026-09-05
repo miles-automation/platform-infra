@@ -26,6 +26,7 @@ Shared infrastructure for SparkSwarm projects. Manages Docker Compose services, 
 |---------|--------|-------------|
 | Caddy | - | Reverse proxy with automatic HTTPS |
 | Postgres | - | Shared database (internal only) |
+| Weaver | weaver.sparkswarm.com | Phone inbox and MCP communication relay; persistent SQLite volume |
 | IEOMD | ieomd.com | Time-locked secret delivery ([repo](https://github.com/richmiles/in-the-event-of-my-death)) |
 | For Whenever | forwhenever.com | Private messages and files for later ([repo](https://github.com/richmiles/for-whenever)) |
 | Noodle | callofthenoodle.com | Bar rating app |
