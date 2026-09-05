@@ -725,12 +725,38 @@ sys.stdout.write(selected)
 '''
 
 
+_DOTENV_EXPORT_FILTER_PY = r'''import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+allowed = json.loads(sys.argv[2])
+out = []
+for raw in path.read_text().splitlines():
+    if not raw or raw.lstrip().startswith("#") or "=" not in raw:
+        out.append(raw)
+        continue
+    name, value = raw.split("=", 1)
+    if allowed is not None and name.strip() not in allowed:
+        continue
+    if "$" in value:
+        stripped = value.strip()
+        if not (len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ("'", '"')):
+            value = value.replace("$", "$$")
+    out.append(name + "=" + value)
+path.write_text("\n".join(out) + ("\n" if out else ""))
+'''
+
+
 def cmd_prod_secrets_apply(args: argparse.Namespace) -> None:
     require_yes(args, "apply SparkSwarm-exported secrets to prod .env")
     host = prod_host(args)
 
     base = secrets_api_base(args)
     project = secrets_project_name(args.cfg, args.project)
+    allowed_names = project_cfg(args.cfg, args.project).get("secret_export_allowlist")
+    if allowed_names is not None and (
+        not isinstance(allowed_names, list) or not allowed_names
+        or any(not isinstance(name, str) or not name for name in allowed_names)
+    ):
+        raise SystemExit("secret_export_allowlist must be a nonempty list of secret names")
     env = args.environment
     export_url = f"{base}/secrets/export/dotenv?project={project}&environment={env}"
 
@@ -764,24 +790,9 @@ trap 'rm -f "$tmp"' EXIT
 
 curl -fsS {shlex.quote(export_url)} -H "X-API-Key: $API_KEY" > "$tmp"
 
-# Docker Compose treats '$' as interpolation in dotenv values; escape to '$$' so secrets are literal.
-python3 - "$tmp" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-out = []
-for raw in path.read_text().splitlines():
-    line = raw.rstrip("\\n")
-    if not line or line.lstrip().startswith("#") or "=" not in line:
-        out.append(line)
-        continue
-    k, v = line.split("=", 1)
-    vv = v
-    if "$" in vv:
-        stripped = vv.strip()
-        if not (len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ("'", '"')):
-            vv = vv.replace("$", "$$")
-    out.append(k + "=" + vv)
-path.write_text("\\n".join(out) + ("\\n" if out else ""))
+# Filter opt-in project exports before escaping Compose interpolation.
+python3 - "$tmp" {shlex.quote(json.dumps(allowed_names))} <<'PY'
+{_DOTENV_EXPORT_FILTER_PY}
 PY
 
 out="$(mktemp)"
