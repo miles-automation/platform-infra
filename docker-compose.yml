@@ -11,7 +11,7 @@ x-spark-swarm-hardening: &spark-swarm-hardening
 services:
   # Weaver — phone inbox and MCP communication relay
   weaver:
-    image: ghcr.io/miles-automation/weaver:${WEAVER_IMAGE_TAG:-sha-c456b94}
+    image: ghcr.io/miles-automation/weaver:${CODE_LOOM_IMAGE_TAG:-sha-c456b94}
     restart: unless-stopped
     mem_limit: 192m
     read_only: true
