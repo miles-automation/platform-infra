@@ -512,6 +512,7 @@ services:
     tmpfs:
       - /run:rw,noexec,nosuid,size=8m
       - /tmp:rw,noexec,nosuid,size=8m
+      - /usr/local/etc/haproxy:rw,noexec,nosuid,size=1m
     networks:
       - internal
 
