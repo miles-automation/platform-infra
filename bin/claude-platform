@@ -7,4 +7,4 @@ if [[ "${1:-}" == "--dry-run" ]]; then
   exec "${SCRIPT_DIR}/platform" agent claude --dry-run
 fi
 
-exec "${SCRIPT_DIR}/platform" agent claude -- "$@"
+exec "${SCRIPT_DIR}/platform" agent claude -- claude "$@"
