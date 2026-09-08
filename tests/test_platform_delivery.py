@@ -66,3 +66,41 @@ def test_release_status_rejects_unconfigured_target_before_remote_inspection() -
     module = platform_module()
     with pytest.raises(SystemExit, match="configured project service"):
         module.cmd_prod_release_status(argparse.Namespace(cfg={"projects": {}}, target="raw-service"))
+
+
+def test_scoped_minimal_lookup_preserves_event_project_association(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = platform_module()
+    calls: list[dict[str, object]] = []
+    def lookup(**kwargs: object) -> tuple[int, dict[str, object]]:
+        calls.append(kwargs)
+        assert kwargs["url"] == "https://swarm.test/api/v1/task-sparks/spark-swarm"
+        assert kwargs["headers"] == {"X-API-Key": "scoped-fixture"}
+        return 200, {"id": 5, "slug": "spark-swarm", "name": "Spark Swarm"}
+    def post(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        assert kwargs["url"] == "https://swarm.test/api/v1/events"
+        assert kwargs["headers"] == {"X-API-Key": "scoped-fixture"}
+        assert isinstance(kwargs["data"], dict)
+        assert kwargs["data"]["spark_id"] == 5
+        return {"id": 1}
+    monkeypatch.setattr(module, "_http_json_allow_404", lookup)
+    monkeypatch.setattr(module, "_http_json", post)
+    spark_id = module._sparkswarm_resolve_spark_id(base="https://swarm.test/api/v1", api_key="scoped-fixture", slug="spark-swarm")
+    module._sparkswarm_log_event(base="https://swarm.test/api/v1", api_key="scoped-fixture", event_type="deploy", message="Verified release", spark_id=spark_id, metadata={"status": "success"}, actor="platform-cli")
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("status", [401, 403, 404])
+def test_discovery_permission_failure_never_falls_back_to_full_sparks_or_master_key(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    import urllib.error
+    module = platform_module()
+    urls: list[str] = []
+    def lookup(**kwargs: object) -> tuple[int, None]:
+        url = str(kwargs["url"])
+        urls.append(url)
+        if status == 404:
+            return 404, None
+        raise urllib.error.HTTPError(url, status, "denied", {}, None)
+    monkeypatch.setattr(module, "_http_json_allow_404", lookup)
+    assert module._sparkswarm_resolve_spark_id(base="https://swarm.test/api/v1", api_key="scoped-fixture", slug="spark-swarm") is None
+    assert urls == ["https://swarm.test/api/v1/task-sparks/spark-swarm"]

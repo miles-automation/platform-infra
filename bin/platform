@@ -917,7 +917,7 @@ def _sparkswarm_api_key(args: argparse.Namespace) -> str | None:
 def _sparkswarm_resolve_spark_id(*, base: str, api_key: str, slug: str) -> int | None:
     # Deploy-event bookkeeping must never abort a deploy. A scoped key (the usual
     # ~/.zshrc export) gets 403 here; treat any lookup failure as "no Spark".
-    url = f"{base}/sparks/{urllib.parse.quote(slug)}"
+    url = f"{base}/task-sparks/{urllib.parse.quote(slug, safe='')}"
     try:
         status, data = _http_json_allow_404(method="GET", url=url, headers={"X-API-Key": api_key})
     except urllib.error.HTTPError as e:
