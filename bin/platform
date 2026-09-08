@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
+from contextlib import contextmanager
+from collections.abc import Iterator
 import hashlib
 import html
 import json
@@ -1509,7 +1512,7 @@ def cmd_leads_prospect(args: argparse.Namespace) -> None:
         if company_usable and contact:
             matched_company_contact_count += 1
         posted_at = _prospect_timestamp(raw_row.get("posted_at"))
-        hn_id = int(raw_row.get("hn_id"))
+        hn_id = int(raw_row["hn_id"])
         row: dict[str, Any] = {
             "score": _prospect_score_post(raw_text, posted_at, now, bool(contact)),
             "company": company,
@@ -2880,7 +2883,60 @@ def deploy_pack_migration(pack: dict[str, Any] | None) -> tuple[str | None, str]
     return (None, run.strip())
 
 
+@contextmanager
+def rollout_lock(workspace: Path, service: str) -> Iterator[None]:
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", service):
+        raise SystemExit("Invalid rollout service name")
+    directory = workspace / "runtime" / "rollout-locks"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = directory / f"{service}.lock"
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SystemExit(f"Another rollout owns service {service}; retry after its result is verified") from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def cmd_prod_release_status(args: argparse.Namespace) -> None:
+    service = resolve_service_from_target(args.cfg, args.target)
+    project = project_cfg(args.cfg, args.target)
+    tag_key = _project_image_tag_env(args.target)
+    script = "\n".join([
+        "import json,pathlib,subprocess",
+        f"compose={str(prod_compose_file(args))!r}",
+        f"service={service!r}",
+        f"directory={str(prod_dir(args))!r}",
+        f"tag_key={tag_key!r}",
+        "cid=subprocess.check_output(['docker','compose','-f',compose,'ps','-q',service],cwd=directory,text=True).strip()",
+        "if not cid or '\\n' in cid: raise SystemExit('Expected one running service container')",
+        "container=json.loads(subprocess.check_output(['docker','inspect',cid],text=True))[0]",
+        "desired=None",
+        "for line in (pathlib.Path(directory)/'.env').read_text().splitlines():",
+        " if line.startswith(tag_key+'='): desired=line.split('=',1)[1].strip().strip(chr(34)).strip(chr(39))",
+        "print(json.dumps({'service':service,'containerId':cid,'image':container['Config']['Image'],'imageId':container['Image'],'revision':(container['Config'].get('Labels') or {}).get('org.opencontainers.image.revision'),'running':container['State']['Running'],'health':container['State'].get('Health',{}).get('Status'),'desiredTag':desired}))",
+    ])
+    if not isinstance(project.get("infra_service"), str):
+        raise SystemExit("Release inspection requires a configured project service")
+    remote = "python3 - <<'PLATFORM_RELEASE_STATUS'\n" + script + "\nPLATFORM_RELEASE_STATUS"
+    result = sh_capture(["ssh", prod_host(args), remote], cwd=None, dry_run=args.dry_run, quiet=True)
+    if not args.dry_run:
+        print(json.dumps(json.loads(result)))
+
+
 def cmd_prod_rollout(args: argparse.Namespace) -> None:
+    if args.dry_run:
+        _cmd_prod_rollout_unlocked(args)
+        return
+    service = resolve_service_from_target(args.cfg, args.target)
+    with rollout_lock(args.workspace_root, service):
+        _cmd_prod_rollout_unlocked(args)
+
+
+def _cmd_prod_rollout_unlocked(args: argparse.Namespace) -> None:
     if not args.dry_run:
         require_yes(args, "rollout to prod")
 
@@ -2941,6 +2997,12 @@ def cmd_prod_rollout(args: argparse.Namespace) -> None:
         ).strip()
         if "=" in prev_out:
             previous_tag = _dotenv_value(prev_out.split("=", 1)[1])
+
+    override = getattr(args, "previous_verified_tag", None)
+    if override is not None:
+        if not re.fullmatch(r"sha-[a-f0-9]{7,40}", override):
+            raise SystemExit("Previous verified tag must identify a pinned revision")
+        previous_tag = override
 
     start_ts = time.time()
     rollout_metadata_base: dict[str, Any] = {
@@ -3521,6 +3583,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     prod_ps = prod_sub.add_parser("ps", help="docker ps on the droplet (read-only)", parents=[common])
     prod_ps.set_defaults(func=cmd_prod_ps)
+    release_status = prod_sub.add_parser("release-status", help="Read running image identity and desired tag without secrets", parents=[common])
+    release_status.add_argument("target")
+    release_status.set_defaults(func=cmd_prod_release_status)
 
     prod_logs = prod_sub.add_parser("logs", help="docker compose logs on the droplet (read-only)", parents=[common])
     prod_logs.add_argument("service")
@@ -3584,6 +3649,7 @@ def build_parser() -> argparse.ArgumentParser:
     prod_rollout.add_argument("target", help="Project key (mapped to infra_service) or raw service name")
     prod_rollout.add_argument("--tag", required=True, help="Image tag to set in prod .env (e.g. sha-abc1234)")
     prod_rollout.add_argument("--yes", action="store_true")
+    prod_rollout.add_argument("--previous-verified-tag", help="Preserved verified rollback tag from the delivery journal")
     prod_rollout.add_argument("--apply-secrets", action="store_true", help="Run 'prod secrets apply' first (project targets only)")
     prod_rollout.add_argument("--secrets-env", default="production", help="SparkSwarm secrets environment (default: production)")
     prod_rollout.add_argument("--no-migrate", action="store_true", help="Skip migrations even if deploy/pack.toml defines them")
