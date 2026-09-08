@@ -60,3 +60,9 @@ def test_release_status_only_emits_selected_nonsecret_fields(monkeypatch: pytest
     assert value["imageId"] == container["Image"]
     assert value["revision"] == "a" * 40
     assert value["running"] is True
+
+
+def test_release_status_rejects_unconfigured_target_before_remote_inspection() -> None:
+    module = platform_module()
+    with pytest.raises(SystemExit, match="configured project service"):
+        module.cmd_prod_release_status(argparse.Namespace(cfg={"projects": {}}, target="raw-service"))

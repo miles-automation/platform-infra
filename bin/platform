@@ -2902,8 +2902,12 @@ def rollout_lock(workspace: Path, service: str) -> Iterator[None]:
 
 
 def cmd_prod_release_status(args: argparse.Namespace) -> None:
+    if args.target not in args.cfg.get("projects", {}):
+        raise SystemExit("Release inspection requires a configured project service")
     service = resolve_service_from_target(args.cfg, args.target)
     project = project_cfg(args.cfg, args.target)
+    if not isinstance(project.get("infra_service"), str):
+        raise SystemExit("Release inspection requires a configured project service")
     tag_key = _project_image_tag_env(args.target)
     script = "\n".join([
         "import json,pathlib,subprocess",
@@ -2919,8 +2923,6 @@ def cmd_prod_release_status(args: argparse.Namespace) -> None:
         " if line.startswith(tag_key+'='): desired=line.split('=',1)[1].strip().strip(chr(34)).strip(chr(39))",
         "print(json.dumps({'service':service,'containerId':cid,'image':container['Config']['Image'],'imageId':container['Image'],'revision':(container['Config'].get('Labels') or {}).get('org.opencontainers.image.revision'),'running':container['State']['Running'],'health':container['State'].get('Health',{}).get('Status'),'desiredTag':desired}))",
     ])
-    if not isinstance(project.get("infra_service"), str):
-        raise SystemExit("Release inspection requires a configured project service")
     remote = "python3 - <<'PLATFORM_RELEASE_STATUS'\n" + script + "\nPLATFORM_RELEASE_STATUS"
     result = sh_capture(["ssh", prod_host(args), remote], cwd=None, dry_run=args.dry_run, quiet=True)
     if not args.dry_run:
