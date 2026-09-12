@@ -526,6 +526,11 @@ services:
   # log-shipper never receives the host's root-equivalent Docker socket.
   docker-socket-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+    entrypoint: ["sh", "-ec"]
+    command:
+      - |
+        sed 's/$${BIND_CONFIG}/:2375/g' /usr/local/etc/haproxy/haproxy.cfg.template > /tmp/haproxy.cfg
+        exec haproxy -W -db -f /tmp/haproxy.cfg
     restart: unless-stopped
     mem_limit: 64m
     read_only: true
