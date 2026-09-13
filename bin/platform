@@ -763,8 +763,11 @@ def cmd_prod_secrets_apply(args: argparse.Namespace) -> None:
     env = args.environment
     export_url = f"{base}/secrets/export/dotenv?project={project}&environment={env}"
 
-    marker_start = f"# BEGIN SPARKSWARM {project} {env}"
-    marker_end = f"# END SPARKSWARM {project} {env}"
+    marker_project = project_cfg(args.cfg, args.project).get("secret_export_marker", project)
+    if not isinstance(marker_project, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", marker_project):
+        raise SystemExit("secret_export_marker must contain only letters, digits, underscores or hyphens")
+    marker_start = f"# BEGIN SPARKSWARM {marker_project} {env}"
+    marker_end = f"# END SPARKSWARM {marker_project} {env}"
 
     remote_env_path = str(Path(prod_dir(args)) / ".env")
 

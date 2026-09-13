@@ -337,3 +337,5 @@ platform-infra/
 ### Human Index phone mail
 
 `human-index-mail` serves `/mail/` on humanindex.io; the existing v2 service handles other routes and browser sign-in. Its private SQLite volume caches complete mail and a leased Mac processing queue. The service receives `HI_MAIL_WORKER_KEY` and `HI_MAIL_ACCOUNTS_JSON` from Human Index production secrets, plus the existing v2 owner subject. Build the v3 repo's `Dockerfile.mail`, deploy only this service, then reload Caddy. Revert the `/mail` handler to remove public routing without deleting cached mail. Operational details live in the v3 repo's `docs/cloud-mail.md`.
+
+When a service filters secrets from a project also used by another service, configure a distinct `secret_export_marker` in platform.toml. This changes only the managed runtime block name; the source secrets project stays the same. Human Index mail uses marker `human-index-mail` so its export preserves the legacy Human Index block.

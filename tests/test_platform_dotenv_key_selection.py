@@ -1,4 +1,5 @@
 import importlib.util
+import pytest
 from argparse import Namespace
 import subprocess
 import sys
@@ -75,3 +76,33 @@ def test_apply_embeds_configured_allowlist(monkeypatch) -> None:
     platform.cmd_prod_secrets_apply(args)
     assert len(commands) == 1
     assert "python3 - \"$tmp\" '[\"WEAVER_OWNER_TOKEN\"]'" in commands[0][2]
+
+
+def test_isolated_export_preserves_legacy_runtime_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    platform = _platform_module()
+    commands: list[list[str]] = []
+    monkeypatch.setattr(platform, "sh", lambda command, **kwargs: commands.append(command))
+    args = Namespace(
+        cfg={"prod": {"droplet_host": "example.invalid", "platform_infra_dir": str(tmp_path)},
+             "secrets": {"api_base_url": "https://example.invalid"},
+             "projects": {"mail": {"secrets_project": "human-index", "secret_export_marker": "human-index-mail",
+                                     "secret_export_allowlist": ["HI_MAIL_WORKER_KEY"]}}},
+        project="mail", environment="production", yes=True, dry_run=True, quiet=True,
+    )
+    platform.cmd_prod_secrets_apply(args)
+    legacy = "SPARK_SWARM_API_KEY=synthetic\n# BEGIN SPARKSWARM human-index production\nLEGACY_PASSWORD=preserve\n# END SPARKSWARM human-index production\n"
+    (tmp_path / ".env").write_text(legacy)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    curl = fake_bin / "curl"
+    curl.write_text("#!/bin/sh\nprintf '%s\\n' 'HI_MAIL_WORKER_KEY=synthetic-new'\n")
+    curl.chmod(0o700)
+    import os
+    for _ in range(2):
+        subprocess.run(["bash", "-c", commands[0][2]], check=True,
+                       env={**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]})
+    result = (tmp_path / ".env").read_text()
+    assert result.startswith(legacy)
+    assert result.count("# BEGIN SPARKSWARM human-index-mail production") == 1
+    assert "project=human-index&environment=production" in commands[0][2]
+    assert "HI_MAIL_WORKER_KEY=synthetic-new" in result
