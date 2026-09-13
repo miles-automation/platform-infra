@@ -231,6 +231,29 @@ services:
 
   # Human Index v2 - fresh-DB rebuild (FastAPI + built SPA). Takes over humanindex.io;
   # the legacy human-index service stays defined but dormant (unrouted).
+  human-index-mail:
+    image: ghcr.io/miles-automation/human-index-v3-mail:${HI_MAIL_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      HI_MAIL_DATABASE: /data/mail.db
+      HI_MAIL_OWNER_SUB: ${HUMAN_INDEX_V2_SEED_USER_SPARK_SUB:-}
+      HI_MAIL_WORKER_KEY: ${HI_MAIL_WORKER_KEY:-}
+      HI_MAIL_ACCOUNTS_JSON: ${HI_MAIL_ACCOUNTS_JSON:-[]}
+    volumes:
+      - human_index_mail_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   human-index-v2:
     image: ghcr.io/miles-automation/human-index-v2-app:${HUMAN_INDEX_V2_IMAGE_TAG:-latest}
     restart: unless-stopped
@@ -585,6 +608,7 @@ volumes:
   caddy_config:
   synapse_data:
   human_index_data:
+  human_index_mail_data:
   uptime_state:
   email_monitor_state:
   registry_data:
