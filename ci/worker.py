@@ -263,11 +263,16 @@ def do_build_deploy(job: dict) -> None:
         return
     set_status(repo, sha, "pending", "platform-ci: build + deploy")
     try:
-        _checkout(project, repo, sha, logfile)
+        checkout = _checkout(project, repo, sha, logfile)
         cmd = [PLATFORM_BIN, "build", project, "--no-login"]
         if project in DEPLOY_ON_PUSH:
             cmd += ["--rollout", "--yes"]
         rc = _run(cmd, cwd=WORKSPACE, logfile=logfile)
+        if rc == 0 and project in DEPLOY_ON_PUSH:
+            rc = _post_deploy(checkout, repo, sha, project, logfile)
+            if rc != 0:
+                set_status(repo, sha, "failure", "post-deploy check failed (see worker log)")
+                return
     except Exception as e:  # noqa: BLE001
         log(f"build/deploy error {project}@{sha[:7]}: {e}")
         set_status(repo, sha, "error", f"platform-ci error: {e}")
@@ -277,6 +282,15 @@ def do_build_deploy(job: dict) -> None:
         set_status(repo, sha, "success", f"platform-ci: {verb}")
     else:
         set_status(repo, sha, "failure", "build/deploy failed (see worker log)")
+
+
+def _post_deploy(checkout: str, repo: str, sha: str, project: str, logfile: str) -> int:
+    hook = os.path.join(checkout, "deploy", "post-deploy.sh")
+    if not (os.path.isfile(hook) and os.access(hook, os.X_OK)):
+        return 0
+    log(f"running post-deploy hook for {project}@{sha[:7]}")
+    return _run([hook], cwd=checkout, logfile=logfile,
+                extra_env={"REPO": repo, "SHA": sha, "PROJECT": project})
 
 
 def worker_loop() -> None:

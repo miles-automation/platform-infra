@@ -26,6 +26,15 @@ GitHub ──webhook (HMAC sha256)──► Caddy(ci.sparkswarm.com) ──► w
 
 Deliveries are HMAC-verified and serialized (one job at a time; small box).
 
+### Post-deploy hook
+
+After a successful rollout the worker runs the repo's own `deploy/post-deploy.sh`, if that file
+exists and is executable, from the checkout at the deployed SHA with `REPO`, `SHA` and `PROJECT`
+in the environment (plus the worker's `GH_TOKEN`, so the hook can set its own commit-status
+contexts). A non-zero exit fails the job with a `post-deploy check failed` status. Weaver uses it
+to verify `/healthz` reports the deployed version and to mark `weaver/mac-release` pending until
+the release Mac publishes the matching app.
+
 ### Disk guard
 
 The box is 24G and filled up on 2026-08-02, killing a build with a cryptic npm ENOSPC. Two
