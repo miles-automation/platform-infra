@@ -19,11 +19,15 @@ www.ieomd.com {
 	redir https://ieomd.com{uri} permanent
 }
 
-# Weaver - Agent communication
-weaver.sparkswarm.com {
+# Slopticus - Agent communication
+slopticus.com {
 	import block_lfi
 	encode zstd gzip
-	reverse_proxy weaver:8787
+	reverse_proxy slopticus:8787
+}
+
+www.slopticus.com {
+	redir https://slopticus.com{uri} permanent
 }
 
 # Umami - Analytics
