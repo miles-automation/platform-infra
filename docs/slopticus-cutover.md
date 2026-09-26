@@ -2,7 +2,7 @@
 
 Companion application PR: https://github.com/miles-automation/code-loom/pull/121.
 
-This replaces the Weaver service and route with Slopticus, using `slopticus.com`, `www.slopticus.com`, the `ghcr.io/miles-automation/slopticus` image, `SLOPTICUS_OWNER_TOKEN`, `SLOPTICUS_IMAGE_TAG` and a fresh `slopticus_data` volume. Encrypted phone relay is enabled. No old database is copied or deleted.
+This replaces the Weaver service and route with Slopticus, using `slopticus.com`, `www.slopticus.com`, the `ghcr.io/miles-automation/slopticus` image, `SLOPTICUS_OWNER_TOKEN`, `CODE_LOOM_IMAGE_TAG` and a fresh `slopticus_data` volume. Encrypted phone relay is enabled. No old database is copied or deleted. The image-tag variable follows the retained internal project key: the platform CLI derives `CODE_LOOM_IMAGE_TAG` for `code-loom` rollouts, release status and rollback.
 
 ## Coordinated delivery
 
@@ -25,7 +25,7 @@ domains = ["slopticus.com", "www.slopticus.com"]
 ghcr_image = "ghcr.io/miles-automation/slopticus"
 infra_service = "slopticus"
 required_secrets = ["SLOPTICUS_OWNER_TOKEN"]
-secret_export_allowlist = ["SLOPTICUS_OWNER_TOKEN", "SLOPTICUS_IMAGE_TAG"]
+secret_export_allowlist = ["SLOPTICUS_OWNER_TOKEN", "CODE_LOOM_IMAGE_TAG"]
 
 [projects.code-loom.dns]
 provider = "cloudflare"
