@@ -23,9 +23,6 @@ services:
       WEAVER_ORIGIN: https://weaver.sparkswarm.com
       WEAVER_DB: /app/data/weaver.sqlite
       WEAVER_OWNER_TOKEN: ${WEAVER_OWNER_TOKEN:?Set WEAVER_OWNER_TOKEN via Spark Swarm}
-      VAPID_PUBLIC_KEY: ${WEAVER_VAPID_PUBLIC_KEY:?Set WEAVER_VAPID_PUBLIC_KEY via Spark Swarm}
-      VAPID_PRIVATE_KEY: ${WEAVER_VAPID_PRIVATE_KEY:?Set WEAVER_VAPID_PRIVATE_KEY via Spark Swarm}
-      VAPID_SUBJECT: ${WEAVER_VAPID_SUBJECT:?Set WEAVER_VAPID_SUBJECT via Spark Swarm}
     volumes:
       - weaver_data:/app/data
     networks:
