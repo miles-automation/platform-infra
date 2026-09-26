@@ -10,6 +10,10 @@ The upgrade removes unclaimed legacy registrations and owner sessions while
 preserving account-owned data. Reconnect affected Macs. Remove the retired
 owner secret through Spark Swarm and refresh the managed environment block;
 do not restore it or roll back to owner-key authentication.
+Current relay upgrade instructions are in
+[Slopticus Relay deployment](https://github.com/miles-automation/slopticus-relay/blob/main/docs/deploy.md).
+The iPhone app is not yet generally available; the historical release checklist
+below is not a claim of current public availability or physical-device verification.
 
 This replaced the Weaver service and route with Slopticus, using `slopticus.com`, `www.slopticus.com`, the `ghcr.io/miles-automation/slopticus` image, `CODE_LOOM_IMAGE_TAG` and a fresh `slopticus_data` volume. Encrypted phone relay is enabled. The original service cutover did not copy or delete the old database. The image-tag variable follows the retained internal project key: the platform CLI derives `CODE_LOOM_IMAGE_TAG` for `code-loom` rollouts, release status and rollback.
 
