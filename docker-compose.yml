@@ -9,9 +9,9 @@ x-spark-swarm-hardening: &spark-swarm-hardening
     - /app/data:rw,noexec,nosuid,size=16m
 
 services:
-  # Weaver — phone inbox and MCP communication relay
-  weaver:
-    image: ghcr.io/miles-automation/weaver:${CODE_LOOM_IMAGE_TAG:-sha-c456b94}
+  # Slopticus — phone inbox and MCP communication relay
+  slopticus:
+    image: ghcr.io/miles-automation/slopticus:${CODE_LOOM_IMAGE_TAG:?Set CODE_LOOM_IMAGE_TAG via Spark Swarm}
     restart: unless-stopped
     mem_limit: 192m
     read_only: true
@@ -20,11 +20,12 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      WEAVER_ORIGIN: https://weaver.sparkswarm.com
-      WEAVER_DB: /app/data/weaver.sqlite
-      WEAVER_OWNER_TOKEN: ${WEAVER_OWNER_TOKEN:?Set WEAVER_OWNER_TOKEN via Spark Swarm}
+      SLOPTICUS_ORIGIN: https://slopticus.com
+      SLOPTICUS_DB: /app/data/slopticus.sqlite
+      SLOPTICUS_SECURE_PAIRING: "1"
+      SLOPTICUS_OWNER_TOKEN: ${SLOPTICUS_OWNER_TOKEN:?Set SLOPTICUS_OWNER_TOKEN via Spark Swarm}
     volumes:
-      - weaver_data:/app/data
+      - slopticus_data:/app/data
     networks:
       - internal
     healthcheck:
@@ -599,7 +600,7 @@ networks:
     driver: bridge
 
 volumes:
-  weaver_data:
+  slopticus_data:
   postgres_data:
   caddy_data:
   caddy_config:
