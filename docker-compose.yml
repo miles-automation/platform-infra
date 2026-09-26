@@ -23,7 +23,7 @@ services:
       SLOPTICUS_ORIGIN: https://slopticus.com
       SLOPTICUS_DB: /app/data/slopticus.sqlite
       SLOPTICUS_SECURE_PAIRING: "1"
-      SLOPTICUS_OWNER_TOKEN: ${SLOPTICUS_OWNER_TOKEN:?Set SLOPTICUS_OWNER_TOKEN via Spark Swarm}
+      SLOPTICUS_PUBLIC_SIGNUP: "1"
     volumes:
       - slopticus_data:/app/data
     networks:
