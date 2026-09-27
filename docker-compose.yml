@@ -24,6 +24,10 @@ services:
       SLOPTICUS_DB: /app/data/slopticus.sqlite
       SLOPTICUS_SECURE_PAIRING: "1"
       SLOPTICUS_PUBLIC_SIGNUP: "1"
+      SLOPTICUS_APNS_KEY_P8: ${SLOPTICUS_APNS_KEY_P8:-}
+      SLOPTICUS_APNS_KEY_ID: ${SLOPTICUS_APNS_KEY_ID:-}
+      SLOPTICUS_APNS_TEAM_ID: ${SLOPTICUS_APNS_TEAM_ID:-}
+      SLOPTICUS_APNS_TOPIC: ${SLOPTICUS_APNS_TOPIC:-}
     volumes:
       - slopticus_data:/app/data
     networks:
