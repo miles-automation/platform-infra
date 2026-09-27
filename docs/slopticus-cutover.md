@@ -49,3 +49,7 @@ cloudflare_proxied = false
 ```
 
 Do not merge or deploy this service configuration before its required secrets and image exist. Task 721 remains in progress until coordinated review, delivery verification and cleanup are complete.
+
+## Repository rename (2026-09-27, task 775)
+
+The GitHub repository is now `miles-automation/slopticus` and the workspace project key is `slopticus` (`repos/slopticus`, worktree prefix `wt/slopticus-`). The platform CLI derives `SLOPTICUS_IMAGE_TAG` from the new key, so the `slopticus` service reads that variable; the old `CODE_LOOM_IMAGE_TAG` line stays in the droplet `.env` only as a rollback reference. The Spark Swarm spark slug and secrets project remain `code-loom`, because installed apps sign in to Spark Swarm with that slug for feedback. platform-ci maps `miles-automation/slopticus` to project `slopticus` and clones it to `repos/slopticus`. The sections above describe the state before the rename.
