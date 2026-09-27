@@ -22,7 +22,7 @@ GitHub ──webhook (HMAC sha256)──► Caddy(ci.sparkswarm.com) ──► w
 - `pull_request` (opened/synchronize/reopened) → `check`: clone at PR head SHA → `bin/platform
   check <project>` → commit status. This is the PR merge gate (replaces `ci.yml`). `bin/platform
   check` runs the project's `check_target` from platform.toml (default `check`), so a repo can
-  gate PRs on a wider make target, e.g. code-loom's `ci` (check + test + build).
+  gate PRs on a wider make target, e.g. slopticus's `ci` (check + test + build).
 - `push` to the default branch → `build` (+ `deploy` if the repo is in `DEPLOY_ON_PUSH`):
   `bin/platform build <project> --rollout --yes` (native build → ghcr → prod rollout w/ rollback).
 

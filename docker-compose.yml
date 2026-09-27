@@ -11,7 +11,7 @@ x-spark-swarm-hardening: &spark-swarm-hardening
 services:
   # Slopticus — phone inbox and MCP communication relay
   slopticus:
-    image: ghcr.io/miles-automation/slopticus:${CODE_LOOM_IMAGE_TAG:?Set CODE_LOOM_IMAGE_TAG via Spark Swarm}
+    image: ghcr.io/miles-automation/slopticus:${SLOPTICUS_IMAGE_TAG:?Set SLOPTICUS_IMAGE_TAG via prod rollout}
     restart: unless-stopped
     mem_limit: 192m
     read_only: true

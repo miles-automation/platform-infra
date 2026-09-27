@@ -25,7 +25,7 @@ declare -A REPOS=(
   [human-index]="human-index"
   [richmiles-xyz]="richmiles.xyz"
   [bof]="bullshit-or-fit"
-  [code-loom]="code-loom"
+  [slopticus]="slopticus"
   [platform-infra]="platform-infra"
 )
 
