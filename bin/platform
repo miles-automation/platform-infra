@@ -294,6 +294,15 @@ def cmd_run(args: argparse.Namespace) -> None:
     sh(["make", "-C", str(chosen), target, *extra], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
 
 
+def check_target(cfg: dict[str, Any], key: str, explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    target = project_cfg(cfg, key).get("check_target", "check")
+    if not isinstance(target, str) or not target:
+        raise SystemExit(f"projects.{key}.check_target must be a non-empty string")
+    return target
+
+
 def cmd_check(args: argparse.Namespace) -> None:
     cfg = args.cfg
     projects = cfg.get("projects")
@@ -318,7 +327,7 @@ def cmd_check(args: argparse.Namespace) -> None:
                     workspace_root=args.workspace_root,
                     cfg=args.cfg,
                     project=key,
-                    target=args.target,
+                    target=check_target(args.cfg, key, args.target),
                     wt=args.wt,
                     passthrough=[],
                     dry_run=args.dry_run,
@@ -3536,9 +3545,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--wt", help="Worktree topic (e.g. 212) to run against")
     run.set_defaults(func=cmd_run)
 
-    check = sub.add_parser("check", help="Run the default check target (make check)", parents=[common])
+    check = sub.add_parser(
+        "check", help="Run each project's check target (check_target in platform.toml, default make check)", parents=[common]
+    )
     check.add_argument("project", nargs="?", help="Optional project key; otherwise runs all (excluding platform-infra)")
-    check.add_argument("--target", default="check", help="Make target to run (default: check)")
+    check.add_argument("--target", help="Make target to run (default: the project's check_target, else check)")
     check.add_argument("--wt", help="Worktree topic to run against")
     check.set_defaults(func=cmd_check)
 
