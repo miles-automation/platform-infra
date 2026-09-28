@@ -737,23 +737,91 @@ sys.stdout.write(selected)
 '''
 
 
-_DOTENV_EXPORT_FILTER_PY = r'''import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-allowed = json.loads(sys.argv[2])
-out = []
-for raw in path.read_text().splitlines():
-    if not raw or raw.lstrip().startswith("#") or "=" not in raw:
-        out.append(raw)
+_DOTENV_APPLY_PY = r'''import json, pathlib, re, sys
+env_path, export_path, allowed_json, start, end, out_path = sys.argv[1:7]
+allowed = json.loads(allowed_json)
+exported = json.loads(pathlib.Path(export_path).read_text())
+secrets = exported.get("secrets", exported) if isinstance(exported, dict) else None
+if not isinstance(secrets, dict):
+    sys.exit("secrets export did not return a name to value object")
+name_re = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+plain_re = re.compile(r"[A-Za-z0-9_./:@%+,=-]*")
+selected = {}
+for name, value in secrets.items():
+    if allowed is not None and name not in allowed:
         continue
-    name, value = raw.split("=", 1)
-    if allowed is not None and name.strip() not in allowed:
+    if not name_re.fullmatch(name):
+        sys.exit(f"refusing secret with invalid dotenv name: {name!r}")
+    if not isinstance(value, str):
+        sys.exit(f"refusing non-string secret value for {name}")
+    selected[name] = value
+
+
+def render(value):
+    if plain_re.fullmatch(value):
+        return value
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+        .replace("$", "$$")
+    )
+    return '"' + escaped + '"'
+
+
+def defined_name(line):
+    match = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+    return match.group(1) if match else None
+
+
+def opens_quote(line):
+    value = line.split("=", 1)[1].lstrip()
+    if not value or value[0] not in ("'", '"'):
+        return None
+    quote = value[0]
+    body = value[1:]
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char == "\\" and quote == '"':
+            index += 2
+            continue
+        if char == quote:
+            return None
+        index += 1
+    return quote
+
+
+kept = []
+lines = pathlib.Path(env_path).read_text().splitlines() if pathlib.Path(env_path).exists() else []
+in_block = False
+skip_until = None
+for line in lines:
+    if skip_until is not None:
+        if line.rstrip().endswith(skip_until):
+            skip_until = None
         continue
-    if "$" in value:
-        stripped = value.strip()
-        if not (len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in ("'", '"')):
-            value = value.replace("$", "$$")
-    out.append(name + "=" + value)
-path.write_text("\n".join(out) + ("\n" if out else ""))
+    if line == start:
+        in_block = True
+        continue
+    if line == end:
+        in_block = False
+        continue
+    if in_block:
+        continue
+    name = defined_name(line)
+    if name is not None and name in selected:
+        skip_until = opens_quote(line)
+        continue
+    kept.append(line)
+if in_block:
+    sys.exit(f"unterminated secrets block {start!r} in {env_path}")
+while kept and kept[-1] == "":
+    kept.pop()
+block = [start] + [f"{name}={render(value)}" for name, value in selected.items()] + [end]
+pathlib.Path(out_path).write_text("\n".join(kept + block) + "\n")
 '''
 
 
@@ -770,7 +838,7 @@ def cmd_prod_secrets_apply(args: argparse.Namespace) -> None:
     ):
         raise SystemExit("secret_export_allowlist must be a nonempty list of secret names")
     env = args.environment
-    export_url = f"{base}/secrets/export/dotenv?project={project}&environment={env}"
+    export_url = f"{base}/secrets/export?project={urllib.parse.quote(project)}&environment={urllib.parse.quote(env)}"
 
     marker_project = project_cfg(args.cfg, args.project).get("secret_export_marker", project)
     if not isinstance(marker_project, str) or not re.fullmatch(r"[a-zA-Z0-9_-]+", marker_project):
@@ -805,27 +873,26 @@ trap 'rm -f "$tmp"' EXIT
 
 curl -fsS {shlex.quote(export_url)} -H "X-API-Key: $API_KEY" > "$tmp"
 
-# Filter opt-in project exports before escaping Compose interpolation.
-python3 - "$tmp" {shlex.quote(json.dumps(allowed_names))} <<'PY'
-{_DOTENV_EXPORT_FILTER_PY}
+out="$(mktemp "$(dirname "$ENV_FILE")/.env.apply.XXXXXX")"
+trap 'rm -f "$tmp" "$out"' EXIT
+chmod 600 "$out"
+
+python3 - "$ENV_FILE" "$tmp" {shlex.quote(json.dumps(allowed_names))} "$START" "$END" "$out" <<'PY'
+{_DOTENV_APPLY_PY}
 PY
 
-out="$(mktemp)"
-trap 'rm -f "$tmp" "$out"' EXIT
+if [ -f "$(dirname "$ENV_FILE")/docker-compose.yml" ]; then
+  if ! (cd "$(dirname "$ENV_FILE")" && docker compose --env-file "$out" config -q); then
+    echo "refusing to apply: docker compose cannot parse the new .env; $ENV_FILE is unchanged" >&2
+    exit 1
+  fi
+fi
 
-awk -v start="$START" -v end="$END" '
-  $0 == start {{inblock=1; next}}
-  $0 == end {{inblock=0; next}}
-  !inblock {{print}}
-' "$ENV_FILE" > "$out"
-
-cat >> "$out" <<EOF
-$START
-$(cat "$tmp")
-$END
-EOF
-
+backup="$ENV_FILE.bak.secrets-$(date -u +%Y%m%dT%H%M%SZ)"
+cp -p "$ENV_FILE" "$backup"
+ls -1t "$ENV_FILE".bak.secrets-* 2>/dev/null | tail -n +6 | xargs -r rm -f
 mv "$out" "$ENV_FILE"
+echo "applied {project}/{env} secrets to $ENV_FILE (backup: $backup)"
 """
 
     sh(["ssh", host, remote], cwd=None, dry_run=args.dry_run, quiet=args.quiet)

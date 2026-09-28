@@ -1,13 +1,17 @@
 import importlib.util
 import pytest
 from argparse import Namespace
+import json
+import shutil
 import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
+from types import ModuleType
+from typing import Mapping
 
 
-def _platform_module():
+def _platform_module() -> ModuleType:
     path = Path(__file__).parents[1] / "bin" / "platform"
     loader = SourceFileLoader("platform_cli_dotenv", str(path))
     spec = importlib.util.spec_from_loader("platform_cli_dotenv", loader)
@@ -37,33 +41,93 @@ def test_dotenv_parser_uses_last_value_like_docker_compose(tmp_path: Path) -> No
     assert result.stdout == "active-last"
 
 
+PEM = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMGByqGSM49+/abc=\nxyz\n-----END PRIVATE KEY-----"
+
+
+def _apply(tmp_path: Path, existing: str, secrets: Mapping[str, object], allowed: object = None) -> subprocess.CompletedProcess[str]:
+    platform = _platform_module()
+    env = tmp_path / ".env"
+    env.write_text(existing)
+    export = tmp_path / "export.json"
+    export.write_text(json.dumps({"project": "p", "environment": "production", "secrets": secrets}))
+    return subprocess.run(
+        [sys.executable, "-", str(env), str(export), json.dumps(allowed), "# BEGIN SPARKSWARM p production",
+         "# END SPARKSWARM p production", str(tmp_path / "out.env")],
+        input=platform._DOTENV_APPLY_PY, text=True, capture_output=True,
+    )
+
+
 def test_project_export_does_not_shadow_shared_credentials(tmp_path: Path) -> None:
-    platform = _platform_module()
-    dotenv = tmp_path / "export.env"
-    dotenv.write_text("SPARK_SWARM_API_KEY=global-fallback\nWEAVER_OWNER_TOKEN=test$value\nCODE_LOOM_IMAGE_TAG=sha-test\n")
-    subprocess.run(
-        [sys.executable, "-", str(dotenv), '["WEAVER_OWNER_TOKEN", "CODE_LOOM_IMAGE_TAG"]'],
-        input=platform._DOTENV_EXPORT_FILTER_PY,
-        text=True,
-        check=True,
+    result = _apply(tmp_path, "", {"SPARK_SWARM_API_KEY": "global-fallback", "WEAVER_OWNER_TOKEN": "test$value",
+                                   "CODE_LOOM_IMAGE_TAG": "sha-test"}, ["WEAVER_OWNER_TOKEN", "CODE_LOOM_IMAGE_TAG"])
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "out.env").read_text() == (
+        '# BEGIN SPARKSWARM p production\nWEAVER_OWNER_TOKEN="test$$value"\nCODE_LOOM_IMAGE_TAG=sha-test\n'
+        "# END SPARKSWARM p production\n"
     )
-    assert dotenv.read_text() == "WEAVER_OWNER_TOKEN=test$$value\nCODE_LOOM_IMAGE_TAG=sha-test\n"
 
 
-def test_unconfigured_exports_keep_existing_behavior(tmp_path: Path) -> None:
-    platform = _platform_module()
-    dotenv = tmp_path / "export.env"
-    dotenv.write_text("KEY=value\nOTHER=also-kept\n")
-    subprocess.run(
-        [sys.executable, "-", str(dotenv), 'null'],
-        input=platform._DOTENV_EXPORT_FILTER_PY,
-        text=True,
-        check=True,
+def test_unconfigured_exports_keep_every_secret(tmp_path: Path) -> None:
+    result = _apply(tmp_path, "KEEP=me\n", {"KEY": "value", "OTHER": "also-kept"})
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "out.env").read_text() == (
+        "KEEP=me\n# BEGIN SPARKSWARM p production\nKEY=value\nOTHER=also-kept\n# END SPARKSWARM p production\n"
     )
-    assert dotenv.read_text() == "KEY=value\nOTHER=also-kept\n"
 
 
-def test_apply_embeds_configured_allowlist(monkeypatch) -> None:
+def test_multiline_and_special_values_stay_on_one_line(tmp_path: Path) -> None:
+    result = _apply(tmp_path, "", {"PEM": PEM, "QUOTES": 'a "b" \'c\' #d', "BACKSLASH": "a\\nb", "EMPTY": ""})
+    assert result.returncode == 0, result.stderr
+    body = (tmp_path / "out.env").read_text().splitlines()
+    assert body[1] == 'PEM="-----BEGIN PRIVATE KEY-----\\nMIGTAgEAMBMGByqGSM49+/abc=\\nxyz\\n-----END PRIVATE KEY-----"'
+    assert body[2] == 'QUOTES="a \\"b\\" \'c\' #d"'
+    assert body[3] == 'BACKSLASH="a\\\\nb"'
+    assert body[4] == "EMPTY="
+    assert len(body) == 6
+
+
+def test_existing_definitions_are_replaced_not_duplicated(tmp_path: Path) -> None:
+    existing = (
+        "SPARK_SWARM_API_KEY=k\nPEM=old-single-line\nOTHER=kept\n"
+        "# BEGIN SPARKSWARM p production\nPEM=-----BEGIN PRIVATE KEY-----\nbroken\n-----END PRIVATE KEY-----\n"
+        "# END SPARKSWARM p production\n"
+        'QUOTED="line one\nline two"\nTAIL=kept\n'
+    )
+    result = _apply(tmp_path, existing, {"PEM": PEM, "QUOTED": "new"})
+    assert result.returncode == 0, result.stderr
+    out = (tmp_path / "out.env").read_text()
+    assert out.count("PEM=") == 1
+    assert out.count("QUOTED=") == 1
+    assert "broken" not in out and "line two" not in out
+    assert out.startswith("SPARK_SWARM_API_KEY=k\nOTHER=kept\nTAIL=kept\n# BEGIN SPARKSWARM p production\n")
+
+
+def test_invalid_secret_names_are_refused(tmp_path: Path) -> None:
+    result = _apply(tmp_path, "", {"BAD NAME": "x"})
+    assert result.returncode != 0
+    assert "invalid dotenv name" in result.stderr
+    assert not (tmp_path / "out.env").exists()
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker compose not available")
+def test_docker_compose_reads_back_the_exact_values(tmp_path: Path) -> None:
+    secrets = {"PEM": PEM, "QUOTES": 'a "b" \'c\' #d', "DOLLAR": "p$ss${HOME}", "BACKSLASH": "a\\nb\\\\c",
+               "SPACES": "  padded value  ", "PLAIN": "abc+/=="}
+    result = _apply(tmp_path, "", secrets)
+    assert result.returncode == 0, result.stderr
+    (tmp_path / "docker-compose.yml").write_text(
+        "services:\n  probe:\n    image: busybox\n    environment:\n"
+        + "".join(f"      {name}: ${{{name}}}\n" for name in secrets)
+    )
+    config = subprocess.run(
+        ["docker", "compose", "--env-file", str(tmp_path / "out.env"), "config", "--format", "json"],
+        cwd=tmp_path, text=True, capture_output=True, check=True,
+    )
+    rendered = json.loads(config.stdout)["services"]["probe"]["environment"]
+    assert {name: value.replace("$$", "$") for name, value in rendered.items()} == secrets
+
+
+def test_apply_embeds_configured_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
     platform = _platform_module()
     commands = []
     monkeypatch.setattr(platform, "sh", lambda command, **kwargs: commands.append(command))
@@ -75,7 +139,8 @@ def test_apply_embeds_configured_allowlist(monkeypatch) -> None:
     )
     platform.cmd_prod_secrets_apply(args)
     assert len(commands) == 1
-    assert "python3 - \"$tmp\" '[\"WEAVER_OWNER_TOKEN\"]'" in commands[0][2]
+    assert "'[\"WEAVER_OWNER_TOKEN\"]'" in commands[0][2]
+    assert "/secrets/export?project=weaver&environment=production" in commands[0][2]
 
 
 def test_isolated_export_preserves_legacy_runtime_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,7 +160,7 @@ def test_isolated_export_preserves_legacy_runtime_block(tmp_path: Path, monkeypa
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     curl = fake_bin / "curl"
-    curl.write_text("#!/bin/sh\nprintf '%s\\n' 'HI_MAIL_WORKER_KEY=synthetic-new'\n")
+    curl.write_text("#!/bin/sh\nprintf '%s\\n' '{\"secrets\": {\"HI_MAIL_WORKER_KEY\": \"synthetic-new\"}}'\n")
     curl.chmod(0o700)
     import os
     for _ in range(2):
