@@ -5,6 +5,7 @@
 # Re-runnable: installs only what's missing, then (re)starts the worker + Caddy.
 set -euo pipefail
 
+MODE="${PLATFORM_CI_MODE:-push}"
 WORKSPACE=/srv/platform-ci/workspace
 REPO_DIR="$WORKSPACE/repos/platform-infra"
 INFRA_REMOTE="https://github.com/miles-automation/platform-infra.git"
@@ -50,10 +51,10 @@ git -C "$REPO_DIR" fetch origin -q
 git -C "$REPO_DIR" checkout -q main
 git -C "$REPO_DIR" pull -q --ff-only origin main
 
-echo "==> systemd unit"
+echo "==> systemd units"
 install -m 0644 "$REPO_DIR/ci/platform-ci.service" /etc/systemd/system/platform-ci.service
+install -m 0644 "$REPO_DIR/ci/platform-ci-runner.service" /etc/systemd/system/platform-ci-runner.service
 systemctl daemon-reload
-systemctl enable platform-ci >/dev/null 2>&1 || true
 
 echo "==> docker disk guard (prune timer)"
 install -m 0755 "$REPO_DIR/scripts/docker_prune.sh" /usr/local/bin/docker-prune
@@ -61,6 +62,18 @@ install -m 0644 "$REPO_DIR/systemd/docker-prune.service" /etc/systemd/system/doc
 install -m 0644 "$REPO_DIR/systemd/docker-prune.timer" /etc/systemd/system/docker-prune.timer
 systemctl daemon-reload
 systemctl enable --now docker-prune.timer
+
+if [ "$MODE" = "runner" ]; then
+	echo "==> runner mode: enable platform-ci-runner on boot; push worker + caddy disabled on boot"
+	grep -q '^PLATFORM_CI_DISPATCHER_URL=' /etc/platform-ci/env || { echo "missing PLATFORM_CI_DISPATCHER_URL in /etc/platform-ci/env"; exit 1; }
+	grep -q '^PLATFORM_CI_RUNNER_TOKEN=' /etc/platform-ci/env || { echo "missing PLATFORM_CI_RUNNER_TOKEN in /etc/platform-ci/env"; exit 1; }
+	systemctl enable platform-ci-runner >/dev/null 2>&1
+	systemctl disable platform-ci caddy >/dev/null 2>&1 || true
+	echo "runner enabled for next boot; the running push worker is left alone until you stop it"
+	exit 0
+fi
+
+systemctl enable platform-ci >/dev/null 2>&1 || true
 
 echo "==> caddy config"
 install -d /etc/caddy

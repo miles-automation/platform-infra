@@ -25,6 +25,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -32,6 +33,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 # --------------------------------------------------------------------------- config (from env)
 
@@ -63,7 +65,41 @@ DEPLOY_ON_PUSH = set(
     s.strip() for s in os.environ.get("PLATFORM_CI_DEPLOY_ON_PUSH", "").split(",") if s.strip()
 )
 
-_jobs: "queue.Queue[dict]" = queue.Queue(maxsize=64)
+_jobs: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=64)
+_cancelled = threading.Event()
+_procs: "set[subprocess.Popen[bytes]]" = set()
+_procs_lock = threading.Lock()
+
+
+def begin_job() -> None:
+    _cancelled.clear()
+
+
+def cancel_running() -> None:
+    _cancelled.set()
+    with _procs_lock:
+        procs = list(_procs)
+    for proc in procs:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def is_cancelled() -> bool:
+    return _cancelled.is_set()
+
+
+def check_target(project: str) -> str:
+    try:
+        import tomllib
+
+        with open(os.path.join(WORKSPACE, "platform.toml"), "rb") as fh:
+            cfg = tomllib.load(fh)
+        target = ((cfg.get("projects") or {}).get(project) or {}).get("check_target", "check")
+        return target if isinstance(target, str) and target else "check"
+    except (ImportError, OSError, ValueError):
+        return "check"
 
 
 def log(msg: str) -> None:
@@ -73,7 +109,7 @@ def log(msg: str) -> None:
 # --------------------------------------------------------------------------- GitHub helpers
 
 
-def _gh_api(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
+def _gh_api(method: str, url: str, body: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {GITHUB_TOKEN}")
@@ -92,7 +128,7 @@ def _gh_api(method: str, url: str, body: dict | None = None) -> tuple[int, dict]
 
 def set_status(repo: str, sha: str, state: str, description: str, target_url: str | None = None) -> None:
     """state: pending | success | failure | error. description: <=140 chars (GitHub truncates)."""
-    if not (GITHUB_TOKEN and repo and sha):
+    if not (GITHUB_TOKEN and repo and sha) or _cancelled.is_set():
         return
     body = {"state": state, "context": STATUS_CONTEXT, "description": description[:140]}
     if target_url:
@@ -104,17 +140,31 @@ def set_status(repo: str, sha: str, state: str, description: str, target_url: st
 # --------------------------------------------------------------------------- action runner
 
 
-def _run(cmd: list[str], cwd: str | None, logfile: str, extra_env: dict | None = None) -> int:
+def _run(cmd: list[str], cwd: str | None, logfile: str, extra_env: dict[str, str] | None = None) -> int:
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
     shown = " ".join(cmd)
     if GITHUB_TOKEN:
         shown = shown.replace(GITHUB_TOKEN, "***")
+    if _cancelled.is_set():
+        return 130
     with open(logfile, "ab", buffering=0) as fh:
         fh.write(f"\n$ {shown}\n".encode())
-        proc = subprocess.run(cmd, cwd=cwd, env=env, stdout=fh, stderr=subprocess.STDOUT)
-    return proc.returncode
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=fh, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        with _procs_lock:
+            _procs.add(proc)
+        try:
+            while True:
+                try:
+                    return proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    if _cancelled.is_set():
+                        os.killpg(proc.pid, signal.SIGKILL)
+        finally:
+            with _procs_lock:
+                _procs.discard(proc)
 
 
 def _checkout(project: str, repo: str, sha: str, logfile: str) -> str:
@@ -166,7 +216,7 @@ def _pg_sql(compose: str, cwd: str, user: str, sql: str, logfile: str) -> int:
                 cwd=cwd, logfile=logfile)
 
 
-def _maybe_db_up(path: str, sha: str, logfile: str) -> dict | None:
+def _maybe_db_up(path: str, sha: str, logfile: str) -> dict[str, Any] | None:
     """App test suites gate DB tests on a reachable dev Postgres and (per conftest) must NOT
     silently skip them when CI is set — so bring up the repo's own compose postgres service if
     it defines one. The SERVER (container + named volume) persists across checks, but every
@@ -210,7 +260,7 @@ def _maybe_db_up(path: str, sha: str, logfile: str) -> dict | None:
     return db
 
 
-def _db_drop(db: dict, logfile: str) -> None:
+def _db_drop(db: dict[str, Any], logfile: str) -> None:
     _pg_sql(db["compose"], db["cwd"], db["user"],
             f"DROP DATABASE IF EXISTS \"{db['name']}\" WITH (FORCE)", logfile)
 
@@ -231,12 +281,13 @@ def _ensure_disk(repo: str, sha: str, logfile: str) -> bool:
     return False
 
 
-def do_check(job: dict) -> None:
+def do_check(job: dict[str, Any]) -> str:
     repo, sha, project = job["repo"], job["sha"], job["project"]
     logfile = os.path.join(LOG_DIR, f"check-{project}-{sha[:7]}.log")
     if not _ensure_disk(repo, sha, logfile):
-        return
-    set_status(repo, sha, "pending", "platform-ci: running make check")
+        return "error"
+    target = check_target(project)
+    set_status(repo, sha, "pending", f"platform-ci: running make {target}")
     db = None
     try:
         path = _checkout(project, repo, sha, logfile)
@@ -248,19 +299,20 @@ def do_check(job: dict) -> None:
     except Exception as e:  # noqa: BLE001
         log(f"check error {project}@{sha[:7]}: {e}")
         set_status(repo, sha, "error", f"platform-ci error: {e}")
-        return
+        return "error"
     finally:
         if db:
             _db_drop(db, logfile)
     set_status(repo, sha, "success" if rc == 0 else "failure",
-               "checks passed" if rc == 0 else "make check failed")
+               f"make {target} passed" if rc == 0 else f"make {target} failed")
+    return "success" if rc == 0 else "failure"
 
 
-def do_build_deploy(job: dict) -> None:
+def do_build_deploy(job: dict[str, Any]) -> str:
     repo, sha, project = job["repo"], job["sha"], job["project"]
     logfile = os.path.join(LOG_DIR, f"deploy-{project}-{sha[:7]}.log")
     if not _ensure_disk(repo, sha, logfile):
-        return
+        return "error"
     set_status(repo, sha, "pending", "platform-ci: build + deploy")
     try:
         checkout = _checkout(project, repo, sha, logfile)
@@ -272,16 +324,17 @@ def do_build_deploy(job: dict) -> None:
             rc = _post_deploy(checkout, repo, sha, project, logfile)
             if rc != 0:
                 set_status(repo, sha, "failure", "post-deploy check failed (see worker log)")
-                return
+                return "failure"
     except Exception as e:  # noqa: BLE001
         log(f"build/deploy error {project}@{sha[:7]}: {e}")
         set_status(repo, sha, "error", f"platform-ci error: {e}")
-        return
+        return "error"
     if rc == 0:
         verb = "deployed" if project in DEPLOY_ON_PUSH else "image built"
         set_status(repo, sha, "success", f"platform-ci: {verb}")
-    else:
-        set_status(repo, sha, "failure", "build/deploy failed (see worker log)")
+        return "success"
+    set_status(repo, sha, "failure", "build/deploy failed (see worker log)")
+    return "failure"
 
 
 def _post_deploy(checkout: str, repo: str, sha: str, project: str, logfile: str) -> int:
@@ -325,7 +378,7 @@ def _enqueue(action: str, repo: str, sha: str, project: str) -> bool:
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):  # noqa: ANN001 — silence default stderr spam; we log explicitly
+    def log_message(self, format: str, *args: Any) -> None:  # silence default stderr spam; we log explicitly
         return
 
     def _reply(self, code: int, msg: str) -> None:
@@ -334,13 +387,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(msg.encode())
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         if self.path == "/healthz":
             self._reply(200, "ok")
         else:
             self._reply(404, "not found")
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         if self.path != "/webhook":
             self._reply(404, "not found")
             return

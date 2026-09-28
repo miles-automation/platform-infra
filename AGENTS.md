@@ -38,6 +38,7 @@ This repo manages shared infrastructure for all SparkSwarm projects on a single 
 | uptime-prober | - | - | Fleet uptime prober (Spark Swarm worker) |
 | email-monitor | - | - | IMAP polling + Matrix notifications (Spark Swarm worker) |
 | lead-scheduler | - | - | Lead outreach scheduler (Spark Swarm worker) |
+| platform-ci-dispatcher | ci.sparkswarm.com | 8766 | On-demand CI dispatcher (creates/destroys CI droplets; see ci/README.md) |
 
 ## Secrets Management
 

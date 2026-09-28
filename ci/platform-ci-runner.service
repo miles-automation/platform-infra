@@ -1,0 +1,19 @@
+[Unit]
+Description=platform-ci runner (pulls jobs from the on-demand dispatcher)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/platform-ci/env
+ExecStartPre=-/usr/bin/git -C /srv/platform-ci/workspace/repos/platform-infra fetch -q origin main
+ExecStartPre=-/usr/bin/git -C /srv/platform-ci/workspace/repos/platform-infra checkout -q -f -B main origin/main
+ExecStart=/usr/bin/python3 /srv/platform-ci/workspace/repos/platform-infra/ci/runner.py
+Restart=always
+RestartSec=5
+User=root
+StandardOutput=append:/srv/platform-ci/logs/runner.log
+StandardError=append:/srv/platform-ci/logs/runner.log
+
+[Install]
+WantedBy=multi-user.target
