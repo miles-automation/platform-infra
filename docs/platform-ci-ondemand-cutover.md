@@ -12,9 +12,13 @@ The owner runs every step. Nothing here was run during task 816 implementation.
 
 Run commands from the workspace root. Never echo a token. Pipe it with `--stdin`.
 
-## 1. DigitalOcean tokens (owner, DO control panel → API → Generate New Token → Custom Scopes)
+## 1. DigitalOcean token (DONE 2026-09-28)
 
-**A. `platform-ci-dispatcher`** lives on the platform droplet only. Give it these scopes:
+**Token A, `platform-ci-dispatcher`**, was created in the main DO account and stored as
+`PLATFORM_CI_DO_TOKEN` in `spark-swarm/production`. Its read-only checks came back as expected:
+droplets, images, snapshots, account keys and tags returned 200, and account, domains,
+firewalls, volumes and databases returned 403. It lives in Spark Swarm and, after step 4, in the
+platform droplet `.env` only. Its scopes:
 
 | Scope | Why |
 |---|---|
@@ -24,28 +28,22 @@ Run commands from the workspace root. Never echo a token. Pipe it with `--stdin`
 | `image:read` | `GET /v2/images?private=true` to find the newest `platform-ci-snap-*`, and to create from a private image (DO lists it as an associated scope of `droplet:create`) |
 | `tag:read` | required by DO for the `tag_name` filter on the droplet list |
 | `tag:create` | needed to tag a droplet at create time (associated scope of `droplet:create`) |
-| `ssh_key:read` | attach `PLATFORM_CI_SSH_KEYS` at create (associated scope of `droplet:create`; drop it if you leave that var empty) |
+| `ssh_key:read` | attach `PLATFORM_CI_SSH_KEYS` at create (associated scope of `droplet:create`) |
 
-It has no `droplet:update`, `image:create/delete`, `snapshot:*`, `actions:*` or `project:*`
-scopes. Choose no expiry, or 1 year with a calendar reminder.
+It has no `droplet:update`, `image:create/delete`, `snapshot:*`, `actions:*` or `project:*` scopes.
 
-**B. `platform-ci-snapshot`** is an operator token for `bin/platform ci snapshot` only. It is
-never placed on a droplet. Give it these scopes:
+**No second token.** `bin/platform ci snapshot` runs only from the owner's Mac. It uses the
+local doctl login (`doctl auth token`), or `DIGITALOCEAN_ACCESS_TOKEN` if that is set, and never
+prints the token.
 
-| Scope | Why |
-|---|---|
-| `droplet:read` | find the tagged box and poll `GET /v2/droplets/{id}/actions/{id}` |
-| `droplet:update` + `image:create` | `POST /v2/droplets/{id}/actions {"type":"snapshot"}` (DO lists both for the snapshot action) |
-| `snapshot:read` | `GET /v2/snapshots?resource_type=droplet` (prune list) |
-| `snapshot:delete` | `DELETE /v2/snapshots/{id}` (prune beyond `--keep`) |
-| `tag:read` | tag filter on the droplet list |
+**Risk, accepted by owner 2026-09-28.** DO scopes cannot be limited to a tag, and there is no
+separate DO team, so token A **can delete any droplet in the main account**, including `platform`
+and `platform-db`. The accepted protection is the dispatcher's guard: it only deletes droplets
+that are tagged `platform-ci-ondemand` **and** named `platform-ci-ondemand-*` (see the tests).
+Never reuse token A anywhere else.
 
-Sources: DO API scopes reference, the `droplet:create` associated scopes, and the
-Droplet Actions reference (the snapshot action requires `droplet:update` and `image:create`).
-DO scopes cannot be limited to a tag, so token A **can delete any droplet in the account**,
-including `platform` and `platform-db`. The dispatcher only deletes droplets that are tagged
-`platform-ci-ondemand` **and** named `platform-ci-ondemand-*` (see the tests). Treat token A as a
-crown-jewel secret.
+Sources: DO API scopes reference, the `droplet:create` associated scopes, and the Droplet
+Actions reference.
 
 ## 2. Spark Swarm secrets
 
@@ -53,7 +51,7 @@ crown-jewel secret.
 dispatcher needs go there.
 
 ```sh
-pbpaste | ./bin/platform secrets put spark-swarm production PLATFORM_CI_DO_TOKEN --stdin          # token A
+# PLATFORM_CI_DO_TOKEN (token A) is already stored (step 1)
 openssl rand -hex 32 | ./bin/platform secrets put spark-swarm production PLATFORM_CI_RUNNER_TOKEN --stdin
 openssl rand -hex 32 | ./bin/platform secrets put spark-swarm production PLATFORM_CI_ADMIN_TOKEN --stdin
 ssh root@167.172.224.151 "sed -n 's/^PLATFORM_CI_WEBHOOK_SECRET=//p' /etc/platform-ci/env" \
@@ -64,15 +62,11 @@ ssh root@167.172.224.151 "sed -n 's/^PLATFORM_CI_REPO_MAP=//p' /etc/platform-ci/
   | ./bin/platform secrets put spark-swarm production PLATFORM_CI_REPO_MAP --stdin
 ```
 
-Store token B outside the exported environment:
-
-```sh
-pbpaste | ./bin/platform secrets put spark-swarm ci-operator PLATFORM_CI_SNAPSHOT_DO_TOKEN --stdin   # token B
-```
-
-`PLATFORM_CI_SSH_KEYS` is optional. The snapshot already carries root's `authorized_keys`. If it
-is set, use DO key ids (for example `46869945`). With no key set, DO may email a root password
-for each new box.
+`PLATFORM_CI_SSH_KEYS` defaults to `46869945` in `docker-compose.yml`. That is the DO account key
+"nucleus-development-rich" (MD5 `8f:9e:c8:f5:b4:70:8e:66:a5:dc:11:10:48:07:c3:56`). It is the key
+the owner's Mac uses (`~/.ssh/id_rsa`) and the only key in the CI box's root `authorized_keys`.
+It is not a secret. Attaching it at create also stops DO from emailing a root password for each
+box.
 
 ## 3. Merge the PR
 
@@ -186,9 +180,10 @@ Replace the `platform-ci droplet (167.172.224.151)` section with the following:
 > ```bash
 > python3.13 ./bin/platform ci status                 # queue + box
 > python3.13 ./bin/platform ci hold 60                # keep a box up (e.g. to refresh it)
-> python3.13 ./bin/platform ci snapshot --yes         # refresh the box image (token: spark-swarm/ci-operator)
+> python3.13 ./bin/platform ci snapshot --yes         # refresh the box image (uses local doctl auth)
 > ./bin/platform prod logs platform-ci-dispatcher --tail 100
 > ```
 >
 > The dispatcher's DO token (`PLATFORM_CI_DO_TOKEN`, spark-swarm/production) can delete any
-> droplet. Never reuse it elsewhere.
+> droplet in the account. The owner accepted this on 2026-09-28, with the name-prefix guard as
+> the protection. Never reuse it elsewhere.

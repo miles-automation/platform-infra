@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import subprocess
 import sys
 import threading
 from collections.abc import Iterator
@@ -71,7 +72,7 @@ def _snap(i: int, day: int) -> dict[str, Any]:
 @pytest.fixture
 def cli(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     module = platform_module()
-    monkeypatch.setenv("PLATFORM_CI_SNAPSHOT_DO_TOKEN", "t")
+    monkeypatch.setenv("DIGITALOCEAN_ACCESS_TOKEN", "t")
     monkeypatch.setattr(module.time, "sleep", lambda s: None)
     return module
 
@@ -102,6 +103,46 @@ def test_snapshot_refuses_ambiguous_box_and_dry_run_writes_nothing(cli: ModuleTy
     monkeypatch.setattr(cli, "_do", fake)
     cli.cmd_ci_snapshot(_args(droplet_id=551995541, dry_run=True, yes=False))
     assert all(m == "GET" for (m, _) in fake.calls)
+
+
+def test_snapshot_token_comes_from_doctl_and_is_never_printed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = platform_module()
+    monkeypatch.delenv("DIGITALOCEAN_ACCESS_TOKEN", raising=False)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="dop_v1_secretvalue\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    seen: list[str] = []
+
+    def fake_do(token: str, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        seen.append(token)
+        if path.startswith("/droplets/"):
+            return {"droplet": {"name": "platform-ci-ondemand-x", "status": "active"}}
+        return {"snapshots": []}
+
+    monkeypatch.setattr(module, "_do", fake_do)
+    module.cmd_ci_snapshot(_args(droplet_id=42, dry_run=True, yes=False))
+    assert calls == [["doctl", "auth", "token"]]
+    assert set(seen) == {"dop_v1_secretvalue"}
+    out = capsys.readouterr()
+    assert "dop_v1_secretvalue" not in out.out + out.err
+
+
+def test_snapshot_without_doctl_login_fails_without_echoing(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = platform_module()
+    monkeypatch.delenv("DIGITALOCEAN_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(
+        module.subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Error: leaky detail"),
+    )
+    with pytest.raises(SystemExit, match="doctl auth init") as exc:
+        module.cmd_ci_snapshot(_args(droplet_id=42))
+    assert "leaky" not in str(exc.value)
 
 
 @pytest.fixture

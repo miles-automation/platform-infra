@@ -3455,11 +3455,11 @@ def _ci_url(args: argparse.Namespace) -> str:
     return str(url).rstrip("/")
 
 
-def _ci_secret(args: argparse.Namespace, name: str, project: str = "spark-swarm", environment: str = "production") -> str:
+def _ci_secret(args: argparse.Namespace, name: str) -> str:
     local = os.getenv(name, "").strip()
     if local:
         return local
-    return _resolve_sparkswarm_secret_value(args, name=name, project=project, environment=environment)
+    return _resolve_sparkswarm_secret_value(args, name=name, project="spark-swarm", environment="production")
 
 
 def _ci_admin(args: argparse.Namespace, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -3512,6 +3512,20 @@ def cmd_ci_hold(args: argparse.Namespace) -> None:
     print(f"hold until {datetime.fromtimestamp(float(data['hold_until']), timezone.utc).isoformat()}")
 
 
+def _doctl_token() -> str:
+    override = os.getenv("DIGITALOCEAN_ACCESS_TOKEN", "").strip()
+    if override:
+        return override
+    try:
+        proc = subprocess.run(["doctl", "auth", "token"], capture_output=True, text=True, timeout=30)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        raise SystemExit(f"doctl unavailable ({type(e).__name__}); run `doctl auth init` or set DIGITALOCEAN_ACCESS_TOKEN") from e
+    token = proc.stdout.strip()
+    if proc.returncode != 0 or not token:
+        raise SystemExit("`doctl auth token` returned no token; run `doctl auth init` or set DIGITALOCEAN_ACCESS_TOKEN")
+    return token
+
+
 def _do(token: str, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}"}
     try:
@@ -3530,7 +3544,7 @@ def _ci_snapshots(token: str) -> list[dict[str, Any]]:
 
 
 def cmd_ci_snapshot(args: argparse.Namespace) -> None:
-    token = _ci_secret(args, "PLATFORM_CI_SNAPSHOT_DO_TOKEN", project="spark-swarm", environment="ci-operator")
+    token = _doctl_token()
     droplet_id = args.droplet_id
     if droplet_id is None:
         tagged = _do(token, "GET", f"/droplets?tag_name={CI_BOX_TAG}&per_page=200").get("droplets") or []

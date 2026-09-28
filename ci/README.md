@@ -113,7 +113,7 @@ and `caddy`, effective from the next boot. This is what the snapshot should cont
 | `PLATFORM_CI_DO_TOKEN` | Scoped DO token (see the runbook for scopes); never logged |
 | `PLATFORM_CI_GH_TOKEN` | `milesautomation-claude` PAT for commit statuses and PR head lookups |
 | `PLATFORM_CI_REPO_MAP` | Same JSON as on the box, for example `{"miles-automation/slopticus":{"project":"slopticus"}}` |
-| `PLATFORM_CI_SSH_KEYS` | Comma-separated DO ssh key ids added at create (optional; the snapshot already carries root's `authorized_keys`) |
+| `PLATFORM_CI_SSH_KEYS` | Comma-separated DO ssh key ids added at create. The compose default is `46869945` ("nucleus-development-rich", the key in the CI box's root `authorized_keys`). |
 | `PLATFORM_CI_BOX_SIZE` / `_REGION` / `_IDLE_MINUTES` | `s-4vcpu-8gb` / `nyc3` / `10` |
 
 `PLATFORM_CI_DEPLOY_ON_PUSH` stays on the box. The dispatcher does not need it.
@@ -128,11 +128,9 @@ python3.13 ./bin/platform ci snapshot --yes    # live snapshot of the one tagged
 python3.13 ./bin/platform ci snapshot --droplet-id 551995541 --yes   # first snapshot, from the old always-on box
 ```
 
-`ci snapshot` uses `PLATFORM_CI_SNAPSHOT_DO_TOKEN`, from the environment or else Spark Swarm
-project `spark-swarm`, environment `ci-operator`. This is a separate operator token, because it needs
-snapshot write and delete scopes that the dispatcher must not hold. It is deliberately kept out of
-`spark-swarm/production`, because that whole environment is exported into the platform droplet's
-`.env`. The command waits for the snapshot action to complete. It prunes older
+`ci snapshot` runs only from the owner's Mac. It authenticates with the local doctl login
+(`doctl auth token`), or `DIGITALOCEAN_ACCESS_TOKEN` if that is set, and never prints the token.
+The dispatcher's scoped token cannot take or delete snapshots. The command waits for the snapshot action to complete. It prunes older
 `platform-ci-snap-*` snapshots only after the new one exists.
 
 To refresh the snapshot, for example after toolchain upgrades or to warm the Docker cache:
