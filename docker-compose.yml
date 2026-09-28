@@ -599,6 +599,44 @@ services:
       docker-socket-proxy:
         condition: service_started
 
+  platform-ci-dispatcher:
+    image: python:3.13-slim
+    restart: unless-stopped
+    mem_limit: 96m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command: ["python", "/app/ci/dispatcher.py"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      PLATFORM_CI_DB: /data/dispatcher.sqlite
+      PLATFORM_CI_WEBHOOK_SECRET: ${PLATFORM_CI_WEBHOOK_SECRET:-}
+      PLATFORM_CI_RUNNER_TOKEN: ${PLATFORM_CI_RUNNER_TOKEN:-}
+      PLATFORM_CI_ADMIN_TOKEN: ${PLATFORM_CI_ADMIN_TOKEN:-}
+      PLATFORM_CI_DO_TOKEN: ${PLATFORM_CI_DO_TOKEN:-}
+      PLATFORM_CI_GH_TOKEN: ${PLATFORM_CI_GH_TOKEN:-}
+      PLATFORM_CI_REPO_MAP: ${PLATFORM_CI_REPO_MAP:-{}}
+      PLATFORM_CI_SSH_KEYS: ${PLATFORM_CI_SSH_KEYS:-}
+      PLATFORM_CI_BOX_SIZE: ${PLATFORM_CI_BOX_SIZE:-s-4vcpu-8gb}
+      PLATFORM_CI_BOX_REGION: ${PLATFORM_CI_BOX_REGION:-nyc3}
+      PLATFORM_CI_IDLE_MINUTES: ${PLATFORM_CI_IDLE_MINUTES:-10}
+    volumes:
+      - ./ci:/app/ci:ro
+      - platform_ci_dispatcher:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=8m
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
   internal:
     driver: bridge
@@ -615,3 +653,4 @@ volumes:
   email_monitor_state:
   registry_data:
   log_shipper_state:
+  platform_ci_dispatcher:

@@ -131,3 +131,15 @@ forwhenever.com {
 www.forwhenever.com {
 	redir https://forwhenever.com{uri} permanent
 }
+
+# platform-ci dispatcher (on-demand CI boxes; see ci/README.md)
+ci.sparkswarm.com {
+	encode gzip
+	@allowed path /webhook /healthz /status /runner/* /admin/*
+	handle @allowed {
+		reverse_proxy platform-ci-dispatcher:8766
+	}
+	handle {
+		respond "not found" 404
+	}
+}

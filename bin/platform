@@ -3444,6 +3444,131 @@ def cmd_canvas_serve(args: argparse.Namespace) -> None:
     )
 
 
+CI_DEFAULT_URL = "https://ci.sparkswarm.com"
+CI_BOX_TAG = "platform-ci-ondemand"
+CI_SNAPSHOT_PREFIX = "platform-ci-snap-"
+DO_API = "https://api.digitalocean.com/v2"
+
+
+def _ci_url(args: argparse.Namespace) -> str:
+    url = cfg_get(args.cfg, "ci.dispatcher_url", CI_DEFAULT_URL)
+    return str(url).rstrip("/")
+
+
+def _ci_secret(args: argparse.Namespace, name: str, project: str = "spark-swarm", environment: str = "production") -> str:
+    local = os.getenv(name, "").strip()
+    if local:
+        return local
+    return _resolve_sparkswarm_secret_value(args, name=name, project=project, environment=environment)
+
+
+def _ci_admin(args: argparse.Namespace, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    token = _ci_secret(args, "PLATFORM_CI_ADMIN_TOKEN")
+    try:
+        return _http_json(method=method, url=f"{_ci_url(args)}{path}", headers={"Authorization": f"Bearer {token}"}, data=data)
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"dispatcher {method} {path}: HTTP {e.code}") from e
+    except urllib.error.URLError as e:
+        raise SystemExit(f"dispatcher unreachable at {_ci_url(args)}: {e.reason}") from e
+
+
+def _ci_age(now: float, then: float | None) -> str:
+    if not then:
+        return "-"
+    seconds = int(now - then)
+    return f"{seconds // 60}m{seconds % 60:02d}s"
+
+
+def cmd_ci_status(args: argparse.Namespace) -> None:
+    data = _ci_admin(args, "GET", "/status")
+    if args.json:
+        print(json.dumps(data, indent=2))
+        return
+    now = float(data.get("now") or time.time())
+    box = data.get("box")
+    if box:
+        print(f"box: {box['name']} ({box['droplet_id']}) {box['state']} age={_ci_age(now, box['created_at'])} seen={_ci_age(now, box.get('seen_at'))} ago")
+    else:
+        print("box: none")
+    cfg = data.get("config") or {}
+    print(f"config: {cfg.get('size')} {cfg.get('region')} idle={cfg.get('idle_minutes')}m snapshot={cfg.get('snapshot_prefix')}*")
+    hold = float(data.get("hold_until") or 0)
+    hold_text = f"{_ci_age(hold, now)} left" if hold > now else "none"
+    print(f"last activity {_ci_age(now, data.get('activity_at'))} ago; hold {hold_text}; create_failures={data.get('create_failures')} outbox={data.get('outbox')}")
+    if data.get("last_create_error"):
+        print(f"last create error: {data['last_create_error']}")
+    for label in ("running", "queued"):
+        rows = data.get(label) or []
+        print(f"{label}: {len(rows)}")
+        for job in rows:
+            print(f"  #{job['id']} {job['action']} {job['repo']}@{str(job['sha'])[:7]} attempt={job['attempts']} age={_ci_age(now, job['created_at'])}")
+    print("recent:")
+    for job in (data.get("recent") or [])[: args.limit]:
+        print(f"  #{job['id']} {job['state']:<10} {job['action']:<12} {job['repo']}@{str(job['sha'])[:7]} {job.get('detail') or ''}")
+
+
+def cmd_ci_hold(args: argparse.Namespace) -> None:
+    data = _ci_admin(args, "POST", "/admin/hold", {"minutes": args.minutes})
+    print(f"hold until {datetime.fromtimestamp(float(data['hold_until']), timezone.utc).isoformat()}")
+
+
+def _do(token: str, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        if method == "DELETE":
+            _http_status(method=method, url=f"{DO_API}{path}", headers=headers)
+            return {}
+        return _http_json(method=method, url=f"{DO_API}{path}", headers=headers, data=data)
+    except urllib.error.HTTPError as e:
+        raise SystemExit(f"DigitalOcean {method} {path.split('?')[0]}: HTTP {e.code} {e.read().decode(errors='replace')[:200]}") from e
+
+
+def _ci_snapshots(token: str) -> list[dict[str, Any]]:
+    data = _do(token, "GET", "/snapshots?resource_type=droplet&per_page=200")
+    snaps = [s for s in data.get("snapshots") or [] if str(s.get("name", "")).startswith(CI_SNAPSHOT_PREFIX)]
+    return sorted(snaps, key=lambda s: str(s.get("created_at", "")), reverse=True)
+
+
+def cmd_ci_snapshot(args: argparse.Namespace) -> None:
+    token = _ci_secret(args, "PLATFORM_CI_SNAPSHOT_DO_TOKEN", project="spark-swarm", environment="ci-operator")
+    droplet_id = args.droplet_id
+    if droplet_id is None:
+        tagged = _do(token, "GET", f"/droplets?tag_name={CI_BOX_TAG}&per_page=200").get("droplets") or []
+        if len(tagged) != 1:
+            raise SystemExit(
+                f"expected exactly one {CI_BOX_TAG} droplet, found {len(tagged)}; "
+                "run `platform ci hold 60` and wait for the box, or pass --droplet-id"
+            )
+        droplet_id = int(tagged[0]["id"])
+    droplet = _do(token, "GET", f"/droplets/{droplet_id}").get("droplet") or {}
+    name = f"{CI_SNAPSHOT_PREFIX}{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    existing = _ci_snapshots(token)
+    print(f"snapshot {droplet.get('name')} ({droplet_id}, {droplet.get('status')}) -> {name}")
+    print(f"existing: {', '.join(str(s['name']) for s in existing) or 'none'}; keep newest {args.keep} after success")
+    if args.dry_run:
+        return
+    require_yes(args, "snapshot the CI droplet and prune old CI snapshots")
+    action = _do(token, "POST", f"/droplets/{droplet_id}/actions", {"type": "snapshot", "name": name}).get("action") or {}
+    action_id = action.get("id")
+    deadline = time.time() + args.timeout_minutes * 60
+    status = str(action.get("status", ""))
+    while status == "in-progress":
+        if time.time() > deadline:
+            raise SystemExit(f"snapshot action {action_id} still in progress after {args.timeout_minutes} min; not pruning")
+        time.sleep(15)
+        status = str((_do(token, "GET", f"/droplets/{droplet_id}/actions/{action_id}").get("action") or {}).get("status", ""))
+        print(f"  snapshot action {action_id}: {status}", file=sys.stderr)
+    if status != "completed":
+        raise SystemExit(f"snapshot action {action_id} ended {status!r}; not pruning")
+    snaps = _ci_snapshots(token)
+    if not any(s.get("name") == name for s in snaps):
+        raise SystemExit(f"snapshot {name} not listed after completion; not pruning")
+    for old in snaps[max(args.keep, 1):]:
+        print(f"prune {old['name']} ({old['id']})")
+        _do(token, "DELETE", f"/snapshots/{old['id']}")
+    print(f"ok: {name}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
@@ -3857,6 +3982,24 @@ def build_parser() -> argparse.ArgumentParser:
     leads_prospect.set_defaults(func=cmd_leads_prospect)
 
     # -- canvas ---------------------------------------------------------------
+    ci = sub.add_parser("ci", help="On-demand platform-ci dispatcher + CI box helpers", parents=[common])
+    ci_sub = ci.add_subparsers(dest="ci_cmd", required=True)
+    ci_status = ci_sub.add_parser("status", help="Show dispatcher queue and CI box state (read-only)", parents=[common])
+    ci_status.add_argument("--json", action="store_true", help="Print the raw status JSON")
+    ci_status.add_argument("--limit", type=int, default=10, help="Recent jobs to show")
+    ci_status.set_defaults(func=cmd_ci_status)
+    ci_hold = ci_sub.add_parser("hold", help="Keep a CI box up (creating one if needed) for N minutes; 0 releases", parents=[common])
+    ci_hold.add_argument("minutes", type=float)
+    ci_hold.set_defaults(func=cmd_ci_hold)
+    ci_snapshot = ci_sub.add_parser(
+        "snapshot", help="Snapshot a running CI box (no power-off) and prune old CI snapshots", parents=[common]
+    )
+    ci_snapshot.add_argument("--droplet-id", type=int, help="Droplet to snapshot (default: the one platform-ci-ondemand box)")
+    ci_snapshot.add_argument("--keep", type=int, default=2, help="CI snapshots to keep, newest first (min 1)")
+    ci_snapshot.add_argument("--timeout-minutes", type=float, default=45)
+    ci_snapshot.add_argument("--yes", action="store_true", help="Confirm")
+    ci_snapshot.set_defaults(func=cmd_ci_snapshot)
+
     canvas = sub.add_parser("canvas", help="UI Canvas: capture & compare screens across all sparks", parents=[common])
     canvas_sub = canvas.add_subparsers(dest="canvas_cmd", required=True)
 

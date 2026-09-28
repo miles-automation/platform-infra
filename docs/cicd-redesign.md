@@ -208,6 +208,10 @@ pipeline `check`/`build`/`deploy` actions plus an `onboard` command should own.
 
 ## 12. Implementation plan (`platform-ci`)
 
+> 2026-09 (task 816): the always-on CI droplet is replaced by an on-demand model: a dispatcher on
+> the platform droplet queues work and creates a CI droplet from a snapshot per workload. See
+> `ci/README.md` and `docs/platform-ci-ondemand-cutover.md`.
+
 The decided system: a small **`platform-ci` worker** we own, on a dedicated 2 GB droplet, that
 receives a GitHub webhook → runs the matching `bin/platform` action → posts a GitHub commit
 status + records a Spark Swarm run. commit-guard stays the local pre-push gate; ghcr stays the
