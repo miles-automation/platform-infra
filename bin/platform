@@ -738,86 +738,96 @@ sys.stdout.write(selected)
 
 
 _DOTENV_APPLY_PY = r'''import json, pathlib, re, sys
+from typing import Optional
+
 env_path, export_path, allowed_json, start, end, out_path = sys.argv[1:7]
 allowed = json.loads(allowed_json)
 exported = json.loads(pathlib.Path(export_path).read_text())
 secrets = exported.get("secrets", exported) if isinstance(exported, dict) else None
 if not isinstance(secrets, dict):
     sys.exit("secrets export did not return a name to value object")
-name_re = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-plain_re = re.compile(r"[A-Za-z0-9_./:@%+,=-]*")
-selected = {}
+NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+PLAIN_RE = re.compile(r"[A-Za-z0-9_./:@%+,=!~^*?|&;<>(){}\[\]-]*")
+DEFINITION_RE = re.compile(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\Z", re.S)
+selected: dict[str, str] = {}
 for name, value in secrets.items():
     if allowed is not None and name not in allowed:
         continue
-    if not name_re.fullmatch(name):
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
         sys.exit(f"refusing secret with invalid dotenv name: {name!r}")
     if not isinstance(value, str):
         sys.exit(f"refusing non-string secret value for {name}")
     selected[name] = value
 
 
-def render(value):
-    if plain_re.fullmatch(value):
+def render(value: str) -> str:
+    if PLAIN_RE.fullmatch(value):
         return value
-    escaped = (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\r", "\\r")
-        .replace("\n", "\\n")
-        .replace("\t", "\\t")
-        .replace("$", "$$")
+    escaped = "".join(
+        {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t", "$": "$$"}.get(char, char)
+        for char in value
     )
     return '"' + escaped + '"'
 
 
-def defined_name(line):
-    match = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-    return match.group(1) if match else None
-
-
-def opens_quote(line):
-    value = line.split("=", 1)[1].lstrip()
+def quote_closed(value: str) -> bool:
     if not value or value[0] not in ("'", '"'):
-        return None
+        return True
     quote = value[0]
-    body = value[1:]
-    index = 0
-    while index < len(body):
-        char = body[index]
+    index = 1
+    while index < len(value):
+        char = value[index]
         if char == "\\" and quote == '"':
             index += 2
             continue
         if char == quote:
-            return None
+            return True
         index += 1
-    return quote
+    return False
 
 
-kept = []
-lines = pathlib.Path(env_path).read_text().splitlines() if pathlib.Path(env_path).exists() else []
+def entries(lines: list[str]) -> list[tuple[Optional[str], list[str]]]:
+    result: list[tuple[Optional[str], list[str]]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = DEFINITION_RE.match(line)
+        if match is None or line.lstrip().startswith("#"):
+            result.append((None, [line]))
+            index += 1
+            continue
+        group = [line]
+        value = match.group(2)
+        while not quote_closed(value):
+            index += 1
+            if index >= len(lines):
+                sys.exit(f"refusing to apply: {match.group(1)} in {env_path} has an unterminated quoted value")
+            group.append(lines[index])
+            value += "\n" + lines[index]
+        result.append((match.group(1), group))
+        index += 1
+    return result
+
+
+raw = pathlib.Path(env_path).read_bytes().decode() if pathlib.Path(env_path).exists() else ""
+lines = raw.split("\n")
+if lines and lines[-1] == "":
+    lines.pop()
+kept: list[str] = []
 in_block = False
-skip_until = None
-for line in lines:
-    if skip_until is not None:
-        if line.rstrip().endswith(skip_until):
-            skip_until = None
-        continue
-    if line == start:
+for name, group in entries(lines):
+    first = group[0]
+    if name is None and first == start:
         in_block = True
         continue
-    if line == end:
+    if name is None and first == end:
         in_block = False
         continue
-    if in_block:
+    if in_block or (name is not None and name in selected):
         continue
-    name = defined_name(line)
-    if name is not None and name in selected:
-        skip_until = opens_quote(line)
-        continue
-    kept.append(line)
+    kept.extend(group)
 if in_block:
-    sys.exit(f"unterminated secrets block {start!r} in {env_path}")
+    sys.exit(f"refusing to apply: unterminated secrets block {start!r} in {env_path}")
 while kept and kept[-1] == "":
     kept.pop()
 block = [start] + [f"{name}={render(value)}" for name, value in selected.items()] + [end]
@@ -874,7 +884,7 @@ trap 'rm -f "$tmp"' EXIT
 curl -fsS {shlex.quote(export_url)} -H "X-API-Key: $API_KEY" > "$tmp"
 
 out="$(mktemp "$(dirname "$ENV_FILE")/.env.apply.XXXXXX")"
-trap 'rm -f "$tmp" "$out"' EXIT
+trap 'rm -f "$tmp" "$out"' EXIT HUP INT TERM
 chmod 600 "$out"
 
 python3 - "$ENV_FILE" "$tmp" {shlex.quote(json.dumps(allowed_names))} "$START" "$END" "$out" <<'PY'
@@ -882,17 +892,17 @@ python3 - "$ENV_FILE" "$tmp" {shlex.quote(json.dumps(allowed_names))} "$START" "
 PY
 
 if [ -f "$(dirname "$ENV_FILE")/docker-compose.yml" ]; then
-  if ! (cd "$(dirname "$ENV_FILE")" && docker compose --env-file "$out" config -q); then
-    echo "refusing to apply: docker compose cannot parse the new .env; $ENV_FILE is unchanged" >&2
+  if ! (cd "$(dirname "$ENV_FILE")" && docker compose --env-file "$out" config -q >/dev/null 2>&1); then
+    echo "refusing to apply: docker compose cannot parse the new .env (details suppressed to avoid printing secrets); $ENV_FILE is unchanged" >&2
     exit 1
   fi
 fi
 
 backup="$ENV_FILE.bak.secrets-$(date -u +%Y%m%dT%H%M%SZ)"
 cp -p "$ENV_FILE" "$backup"
-ls -1t "$ENV_FILE".bak.secrets-* 2>/dev/null | tail -n +6 | xargs -r rm -f
+ls -1 "$ENV_FILE".bak.secrets-* 2>/dev/null | sort -r | tail -n +6 | while IFS= read -r old; do rm -f "$old"; done
 mv "$out" "$ENV_FILE"
-echo "applied {project}/{env} secrets to $ENV_FILE (backup: $backup)"
+echo "applied "{shlex.quote(project + "/" + env)}" secrets to $ENV_FILE (backup: $backup)"
 """
 
     sh(["ssh", host, remote], cwd=None, dry_run=args.dry_run, quiet=args.quiet)
