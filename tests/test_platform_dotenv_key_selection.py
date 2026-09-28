@@ -264,3 +264,12 @@ def test_backups_keep_the_five_newest(tmp_path: Path, monkeypatch: pytest.Monkey
     assert len(backups) == 5
     assert ".env.bak.secrets-20200101T000000Z" not in backups
     assert "applied 'p/production' secrets" in result.stdout or "applied p/production secrets" in result.stdout
+
+
+def test_crlf_block_markers_are_replaced_not_duplicated(tmp_path: Path) -> None:
+    existing = "KEEP=a\r\n# BEGIN SPARKSWARM p production\r\nKEY=old\r\n# END SPARKSWARM p production\r\n"
+    result = _apply(tmp_path, existing, {"KEY": "new"})
+    assert result.returncode == 0, result.stderr
+    out = (tmp_path / "out.env").read_bytes().decode()
+    assert out.count("# BEGIN SPARKSWARM p production") == 1
+    assert "KEY=old" not in out
