@@ -140,6 +140,12 @@ To refresh the snapshot, for example after toolchain upgrades or to warm the Doc
    needed. Leave `/etc/platform-ci/env` intact.
 3. Run `ci snapshot --yes`, then `ci hold 0`.
 
+The snapshot carries Playwright's headless Chromium in `/root/.cache/ms-playwright` for Slopticus
+`make smoke`. The browser build is tied to the `playwright-core` version in Slopticus's
+`package-lock.json`, so after that version changes, run `provision.sh` (or
+`npx -y playwright-core@<version> install --with-deps --only-shell chromium`) on a held box and
+take a new snapshot; until then the smoke step fails with an install hint.
+
 The next box boots from the new image.
 
 ### Cold start and cost

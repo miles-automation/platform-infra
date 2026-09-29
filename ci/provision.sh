@@ -34,6 +34,16 @@ if ! command -v uv >/dev/null 2>&1; then
 	ln -sf "$HOME/.local/bin/uv" /usr/local/bin/uv
 fi
 
+echo "==> headless Chromium for browser smoke tests (Slopticus make smoke)"
+SLOPTICUS_LOCK="$WORKSPACE/repos/slopticus/package-lock.json"
+PLAYWRIGHT_VERSION=""
+if [ -f "$SLOPTICUS_LOCK" ]; then
+	PLAYWRIGHT_VERSION=$(jq -r '.packages["node_modules/playwright-core"].version // empty' "$SLOPTICUS_LOCK")
+fi
+if [ -n "$PLAYWRIGHT_VERSION" ]; then
+	(cd /tmp && npx -y "playwright-core@$PLAYWRIGHT_VERSION" install --with-deps --only-shell chromium >/dev/null)
+fi
+
 echo "==> caddy"
 if ! command -v caddy >/dev/null 2>&1; then
 	apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https >/dev/null
