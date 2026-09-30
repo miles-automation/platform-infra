@@ -235,9 +235,12 @@ repo with its own postgres service would collide.
 - Push mode: `/srv/platform-ci/logs/worker.log`, `systemctl restart platform-ci`.
 - Runner: `/srv/platform-ci/logs/runner.log` (per-job logs as before), `systemctl status platform-ci-runner`.
 - Dispatcher: `./bin/platform prod logs platform-ci-dispatcher --tail 200`, `python3.13 ./bin/platform ci status`.
-- To add a repo, extend `PLATFORM_CI_REPO_MAP` on the dispatcher and in the box's env in the
+- To add a repo, extend `PLATFORM_CI_REPO_MAP` on the dispatcher (the runner takes the project
+  from each job), add its project to the box's workspace `platform.toml` and refresh the
   snapshot, add it to `PLATFORM_CI_DEPLOY_ON_PUSH` if it should auto-deploy, and register its
-  webhook.
+  webhook. A repo with no image to build, or one `bin/platform build` cannot build, sets
+  `"build": false` in its map entry: its PRs are checked and pushes to the default branch are
+  ignored.
 
 ## Not done yet (tracked)
 
