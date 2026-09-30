@@ -39,6 +39,7 @@ class Config:
     admin_token: str
     repo_map: dict[str, str]
     db_path: str
+    check_only: frozenset[str] = frozenset()
     tag: str = "platform-ci-ondemand"
     name_prefix: str = "platform-ci-ondemand"
     snapshot_prefix: str = "platform-ci-snap-"
@@ -62,6 +63,7 @@ class Config:
     def from_env(cls, env: Mapping[str, str]) -> Config:
         raw_map = json.loads(env.get("PLATFORM_CI_REPO_MAP", "{}") or "{}")
         repo_map = {repo: str(entry["project"]) for repo, entry in raw_map.items()}
+        check_only = frozenset(repo for repo, entry in raw_map.items() if entry.get("build") is False)
         keys = tuple(k.strip() for k in env.get("PLATFORM_CI_SSH_KEYS", "").split(",") if k.strip())
 
         def num(name: str, default: float) -> float:
@@ -73,6 +75,7 @@ class Config:
             runner_token=env.get("PLATFORM_CI_RUNNER_TOKEN", ""),
             admin_token=env.get("PLATFORM_CI_ADMIN_TOKEN", ""),
             repo_map=repo_map,
+            check_only=check_only,
             db_path=env.get("PLATFORM_CI_DB", "/data/dispatcher.sqlite"),
             tag=env.get("PLATFORM_CI_BOX_TAG", cls.tag),
             name_prefix=env.get("PLATFORM_CI_BOX_NAME_PREFIX", cls.name_prefix),
@@ -467,6 +470,8 @@ class Dispatcher:
             return 202, "ignored non-default branch"
         if payload.get("deleted"):
             return 202, "ignored branch delete"
+        if repo in self.cfg.check_only:
+            return 202, "ignored push: repo is check-only"
         sha = str(payload.get("after", ""))
         if not sha or sha == "0" * 40:
             return 202, "skipped"

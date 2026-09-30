@@ -133,19 +133,24 @@ class Rig:
         return {j["sha"]: j["state"] for j in self.disp.status()["recent"]}
 
 
-@pytest.fixture
-def rig(tmp_path: Path) -> Iterator[Rig]:
+def make_rig(tmp_path: Path, check_only: frozenset[str] = frozenset()) -> Rig:
     cfg = d.Config(
         webhook_secret="hook-secret",
         runner_token="runner-token",
         admin_token="admin-token",
         repo_map={REPO: "slopticus", OTHER: "human-index-v2"},
         db_path=str(tmp_path / "dispatcher.sqlite"),
+        check_only=check_only,
     )
     clock = FakeClock()
     cloud = FakeCloud()
     gh = FakeGitHub()
-    r = Rig(d.Dispatcher(cfg=cfg, cloud=cloud, github=gh, clock=clock), cloud, gh, clock, cfg)
+    return Rig(d.Dispatcher(cfg=cfg, cloud=cloud, github=gh, clock=clock), cloud, gh, clock, cfg)
+
+
+@pytest.fixture
+def rig(tmp_path: Path) -> Iterator[Rig]:
+    r = make_rig(tmp_path)
     yield r
     r.disp.close()
 
@@ -554,14 +559,26 @@ def test_http_surface_verifies_hmac_and_tokens(rig: Rig) -> None:
         server.server_close()
 
 
+def test_check_only_repo_gets_pr_checks_but_no_build_on_push(tmp_path: Path) -> None:
+    rig = make_rig(tmp_path, check_only=frozenset({OTHER}))
+    try:
+        assert rig.push("a" * 40, repo=OTHER) == (202, "ignored push: repo is check-only")
+        assert rig.pr("b" * 40, repo=OTHER)[0] == 202
+        assert rig.push("c" * 40) == (202, "queued build_deploy")
+        assert rig.states() == {"b" * 40: "queued", "c" * 40: "queued"}
+    finally:
+        rig.disp.close()
+
+
 def test_config_from_env() -> None:
     cfg = d.Config.from_env({
-        "PLATFORM_CI_REPO_MAP": json.dumps({REPO: {"project": "slopticus"}}),
+        "PLATFORM_CI_REPO_MAP": json.dumps({REPO: {"project": "slopticus"}, OTHER: {"project": "human-index-v2", "build": False}}),
         "PLATFORM_CI_IDLE_MINUTES": "5",
         "PLATFORM_CI_BOX_SIZE": "s-8vcpu-16gb",
         "PLATFORM_CI_SSH_KEYS": "11, 22",
     })
-    assert cfg.repo_map == {REPO: "slopticus"}
+    assert cfg.repo_map == {REPO: "slopticus", OTHER: "human-index-v2"}
+    assert cfg.check_only == frozenset({OTHER})
     assert cfg.idle_seconds == 300
     assert cfg.size == "s-8vcpu-16gb"
     assert cfg.ssh_keys == ("11", "22")
