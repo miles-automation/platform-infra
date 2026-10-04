@@ -70,7 +70,7 @@ The reconcile loop runs every 15 s:
    extras. This handles a dispatcher restart or a lost DB row, and means a droplet is never
    leaked or duplicated.
 4. If there is work (queued, running or a `hold`) and no droplet exists, create one from the
-   newest private image named `platform-ci-snap-*`. The defaults are `s-4vcpu-8gb` in `nyc3`
+   newest private image named `platform-ci-snap-*`. The defaults are `s-4vcpu-8gb-intel` in `nyc3`
    with tag `platform-ci-ondemand` and the ssh key ids in `PLATFORM_CI_SSH_KEYS`. A create is
    attempted only when the tagged list is empty.
 5. If no work has been seen for `PLATFORM_CI_IDLE_MINUTES` (10), destroy the box.
@@ -114,7 +114,7 @@ and `caddy`, effective from the next boot. This is what the snapshot should cont
 | `PLATFORM_CI_GH_TOKEN` | `milesautomation-claude` PAT for commit statuses and PR head lookups |
 | `PLATFORM_CI_REPO_MAP` | Same JSON as on the box, for example `{"miles-automation/slopticus":{"project":"slopticus"}}` |
 | `PLATFORM_CI_SSH_KEYS` | Comma-separated DO ssh key ids added at create. The compose default is `46869945` ("nucleus-development-rich", the key in the CI box's root `authorized_keys`). |
-| `PLATFORM_CI_BOX_SIZE` / `_REGION` / `_IDLE_MINUTES` | `s-4vcpu-8gb` / `nyc3` / `10` |
+| `PLATFORM_CI_BOX_SIZE` / `_REGION` / `_IDLE_MINUTES` | `s-4vcpu-8gb-intel` / `nyc3` / `10` |
 
 `PLATFORM_CI_DEPLOY_ON_PUSH` stays on the box. The dispatcher does not need it.
 
@@ -154,7 +154,8 @@ The next box boots from the new image.
   claim. The estimate is 1.5 to 3 minutes, and it will be recorded at cutover. Builds reuse the
   Docker layer cache and the per-repo clones baked into the snapshot. Refresh the snapshot to keep
   them warm.
-- `s-4vcpu-8gb` costs $0.0714/h ($48/mo if always on, which is what the current box costs).
+- `s-4vcpu-8gb-intel` costs $0.0833/h ($56/mo if always on). DigitalOcean stopped offering
+  `s-4vcpu-8gb` in nyc3 on 2026-09-28, where the snapshots live, so creates failed with HTTP 422.
   An on-demand box is billed for its lifetime, including the 10-minute idle tail. DO bills
   Droplets per second; confirm this on the first invoice. For
   example, 2 h/day of box life comes to about $4.30/mo. Each snapshot costs $0.06/GB-month;

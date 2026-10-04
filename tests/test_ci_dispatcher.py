@@ -172,7 +172,7 @@ def test_pr_push_creates_one_box_from_latest_snapshot_and_runs_to_status(rig: Ri
     rig.tick()
     assert len(rig.cloud.created) == 1
     spec = rig.cloud.created[0]
-    assert (spec.image, spec.size, spec.region, spec.tags) == (7, "s-4vcpu-8gb", "nyc3", ("platform-ci-ondemand",))
+    assert (spec.image, spec.size, spec.region, spec.tags) == (7, "s-4vcpu-8gb-intel", "nyc3", ("platform-ci-ondemand",))
     job = rig.claim(runner)
     assert job is not None and job["action"] == "check" and job["sha"] == "a" * 40
     assert rig.disp.heartbeat(runner, job["id"], job["lease"]) == "ok"
