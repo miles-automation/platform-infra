@@ -2082,6 +2082,9 @@ def cmd_dns_apply(args: argparse.Namespace) -> None:
     if not apex:
         raise SystemExit(f"Could not infer apex domain from domains: {domains}")
     www = f"www.{apex}"
+    subdomains = [
+        d for d in domains if isinstance(d, str) and d.endswith("." + apex) and d != www
+    ]
 
     token_secret = dns_cfg.get("cloudflare_token_secret")
     if not isinstance(token_secret, str) or not token_secret:
@@ -2113,6 +2116,8 @@ def cmd_dns_apply(args: argparse.Namespace) -> None:
     if not args.quiet:
         print(f"+ cloudflare: zone={apex} set A {apex} -> {droplet_ip}", file=sys.stderr)
         print(f"+ cloudflare: zone={apex} set CNAME {www} -> {apex}", file=sys.stderr)
+        for sub in subdomains:
+            print(f"+ cloudflare: zone={apex} set CNAME {sub} -> {apex}", file=sys.stderr)
 
     if args.dry_run:
         return
@@ -2140,6 +2145,16 @@ def cmd_dns_apply(args: argparse.Namespace) -> None:
         content=apex,
         proxied=proxied,
     )
+    for sub in subdomains:
+        _cloudflare_upsert_record(
+            token=cf_token,
+            zone_id=zone_id,
+            zone_name=apex,
+            record_type="CNAME",
+            name=sub,
+            content=apex,
+            proxied=proxied,
+        )
 
 
 def cmd_dns_email_apply(args: argparse.Namespace) -> None:
