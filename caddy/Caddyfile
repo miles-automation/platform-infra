@@ -112,6 +112,13 @@ www.esherscodex.com {
 	redir https://esherscodex.com{uri} permanent
 }
 
+xc.esherscodex.com {
+	import block_lfi
+	encode zstd gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
+	reverse_proxy eshers-codex:8000
+}
+
 # Miles Automation - AI consultancy
 milesautomation.com {
 	encode zstd gzip
