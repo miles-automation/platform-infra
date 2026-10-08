@@ -70,9 +70,11 @@ The reconcile loop runs every 15 s:
    extras. This handles a dispatcher restart or a lost DB row, and means a droplet is never
    leaked or duplicated.
 4. If there is work (queued, running or a `hold`) and no droplet exists, create one from the
-   newest private image named `platform-ci-snap-*`. The defaults are `s-4vcpu-8gb` in `nyc3`
-   with tag `platform-ci-ondemand` and the ssh key ids in `PLATFORM_CI_SSH_KEYS`. A create is
-   attempted only when the tagged list is empty.
+   newest private image named `platform-ci-snap-*`. Sizes are tried in order (default
+   `s-4vcpu-8gb`, then `s-4vcpu-8gb-amd`, then `s-4vcpu-8gb-intel`) in `nyc3`; a size DO answers
+   is not available in the region falls through to the next, and only when none is available
+   does the attempt count as a create failure. The box gets tag `platform-ci-ondemand` and the
+   ssh key ids in `PLATFORM_CI_SSH_KEYS`. A create is attempted only when the tagged list is empty.
 5. If no work has been seen for `PLATFORM_CI_IDLE_MINUTES` (10), destroy the box.
 
 The dispatcher gives work only to the runner whose droplet id matches the box it created or
@@ -114,7 +116,7 @@ and `caddy`, effective from the next boot. This is what the snapshot should cont
 | `PLATFORM_CI_GH_TOKEN` | `milesautomation-claude` PAT for commit statuses and PR head lookups |
 | `PLATFORM_CI_REPO_MAP` | Same JSON as on the box, for example `{"miles-automation/slopticus":{"project":"slopticus"}}` |
 | `PLATFORM_CI_SSH_KEYS` | Comma-separated DO ssh key ids added at create. The compose default is `46869945` ("nucleus-development-rich", the key in the CI box's root `authorized_keys`). |
-| `PLATFORM_CI_BOX_SIZE` / `_REGION` / `_IDLE_MINUTES` | `s-4vcpu-8gb` / `nyc3` / `10` |
+| `PLATFORM_CI_BOX_SIZE` / `_REGION` / `_IDLE_MINUTES` | `s-4vcpu-8gb,s-4vcpu-8gb-amd,s-4vcpu-8gb-intel` (comma-separated, in order of preference) / `nyc3` / `10` |
 
 `PLATFORM_CI_DEPLOY_ON_PUSH` stays on the box. The dispatcher does not need it.
 

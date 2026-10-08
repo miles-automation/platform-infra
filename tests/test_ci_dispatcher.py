@@ -39,6 +39,7 @@ class FakeCloud:
     droplets: dict[int, d.Droplet] = field(default_factory=dict)
     snapshot: d.Snapshot | None = field(default_factory=lambda: d.Snapshot(7, "platform-ci-snap-1", "2026-09-27"))
     create_error: str | None = None
+    unavailable: set[str] = field(default_factory=set)
     list_error: str | None = None
     created: list[d.DropletSpec] = field(default_factory=list)
     deleted: list[int] = field(default_factory=list)
@@ -55,6 +56,10 @@ class FakeCloud:
     def create_droplet(self, spec: d.DropletSpec) -> d.Droplet:
         if self.create_error:
             raise d.CloudError(self.create_error)
+        if spec.size in self.unavailable:
+            raise d.CloudError(
+                'DO POST /droplets: HTTP 422 {"id":"unprocessable_entity","message":"Size is not available in this region."}'
+            )
         self.next_id += 1
         droplet = d.Droplet(self.next_id, spec.name, "new", spec.tags)
         self.droplets[droplet.id] = droplet
@@ -574,12 +579,41 @@ def test_config_from_env() -> None:
     cfg = d.Config.from_env({
         "PLATFORM_CI_REPO_MAP": json.dumps({REPO: {"project": "slopticus"}, OTHER: {"project": "human-index-v2", "build": False}}),
         "PLATFORM_CI_IDLE_MINUTES": "5",
-        "PLATFORM_CI_BOX_SIZE": "s-8vcpu-16gb",
+        "PLATFORM_CI_BOX_SIZE": "s-8vcpu-16gb, s-8vcpu-16gb-amd",
         "PLATFORM_CI_SSH_KEYS": "11, 22",
     })
     assert cfg.repo_map == {REPO: "slopticus", OTHER: "human-index-v2"}
     assert cfg.check_only == frozenset({OTHER})
     assert cfg.idle_seconds == 300
-    assert cfg.size == "s-8vcpu-16gb"
+    assert cfg.sizes == ("s-8vcpu-16gb", "s-8vcpu-16gb-amd")
+    assert d.Config.from_env({}).sizes == ("s-4vcpu-8gb", "s-4vcpu-8gb-amd", "s-4vcpu-8gb-intel")
     assert cfg.ssh_keys == ("11", "22")
     assert cfg.region == "nyc3"
+
+
+def test_unavailable_size_falls_through_to_the_next(rig: Rig) -> None:
+    rig.cloud.unavailable = {"s-4vcpu-8gb"}
+    rig.pr("a" * 40)
+    rig.tick()
+    assert [spec.size for spec in rig.cloud.created] == ["s-4vcpu-8gb-amd"]
+    assert rig.disp.status()["create_failures"] == 0
+    assert rig.disp.status()["config"]["last_size"] == "s-4vcpu-8gb-amd"
+
+
+def test_no_available_size_counts_one_failure_naming_every_size(rig: Rig) -> None:
+    rig.cloud.unavailable = set(rig.cfg.sizes)
+    rig.pr("a" * 40)
+    rig.tick()
+    status = rig.disp.status()
+    assert rig.cloud.created == []
+    assert status["create_failures"] == 1
+    assert "no CI box size available in nyc3" in status["last_create_error"]
+    assert all(size in status["last_create_error"] for size in rig.cfg.sizes)
+
+
+def test_other_create_errors_do_not_try_more_sizes(rig: Rig) -> None:
+    rig.cloud.create_error = "DO POST /droplets: HTTP 422 droplet limit exceeded"
+    rig.pr("a" * 40)
+    rig.tick()
+    assert rig.disp.status()["create_failures"] == 1
+    assert "droplet limit" in rig.disp.status()["last_create_error"]
