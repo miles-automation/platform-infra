@@ -44,7 +44,7 @@ class Config:
     name_prefix: str = "platform-ci-ondemand"
     snapshot_prefix: str = "platform-ci-snap-"
     region: str = "nyc3"
-    size: str = "s-4vcpu-8gb"
+    sizes: tuple[str, ...] = ("s-4vcpu-8gb", "s-4vcpu-8gb-amd", "s-4vcpu-8gb-intel")
     ssh_keys: tuple[str, ...] = ()
     status_context: str = "platform-ci"
     idle_seconds: float = 600.0
@@ -65,6 +65,7 @@ class Config:
         repo_map = {repo: str(entry["project"]) for repo, entry in raw_map.items()}
         check_only = frozenset(repo for repo, entry in raw_map.items() if entry.get("build") is False)
         keys = tuple(k.strip() for k in env.get("PLATFORM_CI_SSH_KEYS", "").split(",") if k.strip())
+        sizes = tuple(s.strip() for s in env.get("PLATFORM_CI_BOX_SIZE", "").split(",") if s.strip())
 
         def num(name: str, default: float) -> float:
             value = env.get(name, "").strip()
@@ -81,7 +82,7 @@ class Config:
             name_prefix=env.get("PLATFORM_CI_BOX_NAME_PREFIX", cls.name_prefix),
             snapshot_prefix=env.get("PLATFORM_CI_SNAPSHOT_PREFIX", cls.snapshot_prefix),
             region=env.get("PLATFORM_CI_BOX_REGION", cls.region),
-            size=env.get("PLATFORM_CI_BOX_SIZE", cls.size),
+            sizes=sizes or cls.sizes,
             ssh_keys=keys,
             status_context=env.get("PLATFORM_CI_STATUS_CONTEXT", cls.status_context),
             idle_seconds=num("PLATFORM_CI_IDLE_MINUTES", cls.idle_seconds / 60) * 60,
@@ -747,15 +748,7 @@ class Dispatcher:
             snap = self.cloud.latest_snapshot(self.cfg.snapshot_prefix)
             if snap is None:
                 raise CloudError(f"no snapshot named {self.cfg.snapshot_prefix}*")
-            spec = DropletSpec(
-                name=f"{self.cfg.name_prefix}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime(self.clock()))}",
-                region=self.cfg.region,
-                size=self.cfg.size,
-                image=snap.id,
-                ssh_keys=self.cfg.ssh_keys,
-                tags=(self.cfg.tag,),
-            )
-            droplet = self.cloud.create_droplet(spec)
+            droplet, size = self._create_sized(snap)
         except CloudError as e:
             with self._tx():
                 self._create_failed(str(e)[:200])
@@ -765,8 +758,31 @@ class Dispatcher:
                 "INSERT OR REPLACE INTO boxes(droplet_id, name, state, created_at) VALUES (?, ?, 'booting', ?)",
                 (droplet.id, droplet.name, self.clock()),
             )
+            self._set_meta("last_size", size)
             self._touch()
-        log(f"created CI droplet {droplet.name} ({droplet.id}) from {snap.name} size={self.cfg.size}")
+        log(f"created CI droplet {droplet.name} ({droplet.id}) from {snap.name} size={size}")
+
+    def _create_sized(self, snap: Snapshot) -> tuple[Droplet, str]:
+        unavailable: list[str] = []
+        for size in self.cfg.sizes:
+            spec = DropletSpec(
+                name=f"{self.cfg.name_prefix}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime(self.clock()))}",
+                region=self.cfg.region,
+                size=size,
+                image=snap.id,
+                ssh_keys=self.cfg.ssh_keys,
+                tags=(self.cfg.tag,),
+            )
+            try:
+                droplet = self.cloud.create_droplet(spec)
+            except CloudError as e:
+                if not size_unavailable(e):
+                    raise
+                unavailable.append(size)
+                log(f"CI box size {size} is not available in {self.cfg.region}; trying the next size")
+                continue
+            return droplet, size
+        raise CloudError(f"no CI box size available in {self.cfg.region}: tried {', '.join(unavailable)}")
 
     def drain_outbox(self) -> int:
         sent = 0
@@ -810,12 +826,18 @@ class Dispatcher:
                 "last_create_error": self._meta("last_create_error", ""),
                 "outbox": int(self._db.execute("SELECT COUNT(*) FROM outbox").fetchone()[0]),
                 "config": {
-                    "size": self.cfg.size,
+                    "size": ",".join(self.cfg.sizes),
+                    "last_size": self._meta("last_size", ""),
                     "region": self.cfg.region,
                     "idle_minutes": self.cfg.idle_seconds / 60,
                     "snapshot_prefix": self.cfg.snapshot_prefix,
                 },
             }
+
+
+def size_unavailable(error: CloudError) -> bool:
+    text = str(error)
+    return "HTTP 422" in text and "not available" in text
 
 
 def verify_signature(secret: str, body: bytes, header: str) -> bool:
@@ -966,7 +988,7 @@ def main() -> int:
     server = ThreadingHTTPServer((cfg.listen_host, cfg.listen_port), make_handler(dispatcher))
     log(
         f"platform-ci dispatcher on {cfg.listen_host}:{cfg.listen_port}; repos={sorted(cfg.repo_map)}; "
-        f"box={cfg.size}/{cfg.region} tag={cfg.tag} idle={cfg.idle_seconds / 60:g}m"
+        f"box={','.join(cfg.sizes)}/{cfg.region} tag={cfg.tag} idle={cfg.idle_seconds / 60:g}m"
     )
     server.serve_forever()
     return 0
