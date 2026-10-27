@@ -43,7 +43,7 @@ class Config:
     tag: str = "platform-ci-ondemand"
     name_prefix: str = "platform-ci-ondemand"
     snapshot_prefix: str = "platform-ci-snap-"
-    region: str = "nyc3"
+    region: str = "nyc2"
     sizes: tuple[str, ...] = ("s-4vcpu-8gb", "s-4vcpu-8gb-amd", "s-4vcpu-8gb-intel", "c5-4vcpu-8gb-intel")
     ssh_keys: tuple[str, ...] = ()
     status_context: str = "platform-ci"

@@ -177,7 +177,7 @@ def test_pr_push_creates_one_box_from_latest_snapshot_and_runs_to_status(rig: Ri
     rig.tick()
     assert len(rig.cloud.created) == 1
     spec = rig.cloud.created[0]
-    assert (spec.image, spec.size, spec.region, spec.tags) == (7, "s-4vcpu-8gb", "nyc3", ("platform-ci-ondemand",))
+    assert (spec.image, spec.size, spec.region, spec.tags) == (7, "s-4vcpu-8gb", "nyc2", ("platform-ci-ondemand",))
     job = rig.claim(runner)
     assert job is not None and job["action"] == "check" and job["sha"] == "a" * 40
     assert rig.disp.heartbeat(runner, job["id"], job["lease"]) == "ok"
@@ -593,7 +593,7 @@ def test_config_from_env() -> None:
         "c5-4vcpu-8gb-intel",
     )
     assert cfg.ssh_keys == ("11", "22")
-    assert cfg.region == "nyc3"
+    assert cfg.region == "nyc2"
 
 
 def test_unavailable_size_falls_through_to_the_next(rig: Rig) -> None:
@@ -612,7 +612,7 @@ def test_no_available_size_counts_one_failure_naming_every_size(rig: Rig) -> Non
     status = rig.disp.status()
     assert rig.cloud.created == []
     assert status["create_failures"] == 1
-    assert "no CI box size available in nyc3" in status["last_create_error"]
+    assert "no CI box size available in nyc2" in status["last_create_error"]
     assert all(size in status["last_create_error"] for size in rig.cfg.sizes)
 
 
