@@ -586,7 +586,12 @@ def test_config_from_env() -> None:
     assert cfg.check_only == frozenset({OTHER})
     assert cfg.idle_seconds == 300
     assert cfg.sizes == ("s-8vcpu-16gb", "s-8vcpu-16gb-amd")
-    assert d.Config.from_env({}).sizes == ("s-4vcpu-8gb", "s-4vcpu-8gb-amd", "s-4vcpu-8gb-intel")
+    assert d.Config.from_env({}).sizes == (
+        "s-4vcpu-8gb",
+        "s-4vcpu-8gb-amd",
+        "s-4vcpu-8gb-intel",
+        "c5-4vcpu-8gb-intel",
+    )
     assert cfg.ssh_keys == ("11", "22")
     assert cfg.region == "nyc3"
 

@@ -44,7 +44,7 @@ class Config:
     name_prefix: str = "platform-ci-ondemand"
     snapshot_prefix: str = "platform-ci-snap-"
     region: str = "nyc3"
-    sizes: tuple[str, ...] = ("s-4vcpu-8gb", "s-4vcpu-8gb-amd", "s-4vcpu-8gb-intel")
+    sizes: tuple[str, ...] = ("s-4vcpu-8gb", "s-4vcpu-8gb-amd", "s-4vcpu-8gb-intel", "c5-4vcpu-8gb-intel")
     ssh_keys: tuple[str, ...] = ()
     status_context: str = "platform-ci"
     idle_seconds: float = 600.0
