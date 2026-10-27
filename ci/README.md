@@ -71,7 +71,8 @@ The reconcile loop runs every 15 s:
    leaked or duplicated.
 4. If there is work (queued, running or a `hold`) and no droplet exists, create one from the
    newest private image named `platform-ci-snap-*`. Sizes are tried in order (default
-   `s-4vcpu-8gb`, then `s-4vcpu-8gb-amd`, then `s-4vcpu-8gb-intel`) in `nyc3`; a size DO answers
+   `s-4vcpu-8gb`, then `s-4vcpu-8gb-amd`, then `s-4vcpu-8gb-intel`, then `c5-4vcpu-8gb-intel`) in
+   `nyc3`; a size DO answers
    is not available in the region falls through to the next, and only when none is available
    does the attempt count as a create failure. The box gets tag `platform-ci-ondemand` and the
    ssh key ids in `PLATFORM_CI_SSH_KEYS`. A create is attempted only when the tagged list is empty.
@@ -116,7 +117,7 @@ and `caddy`, effective from the next boot. This is what the snapshot should cont
 | `PLATFORM_CI_GH_TOKEN` | `milesautomation-claude` PAT for commit statuses and PR head lookups |
 | `PLATFORM_CI_REPO_MAP` | Same JSON as on the box, for example `{"miles-automation/slopticus":{"project":"slopticus"}}` |
 | `PLATFORM_CI_SSH_KEYS` | Comma-separated DO ssh key ids added at create. The compose default is `46869945` ("nucleus-development-rich", the key in the CI box's root `authorized_keys`). |
-| `PLATFORM_CI_BOX_SIZE` / `_REGION` / `_IDLE_MINUTES` | `s-4vcpu-8gb,s-4vcpu-8gb-amd,s-4vcpu-8gb-intel` (comma-separated, in order of preference) / `nyc3` / `10` |
+| `PLATFORM_CI_BOX_SIZE` / `_REGION` / `_IDLE_MINUTES` | `s-4vcpu-8gb,s-4vcpu-8gb-amd,s-4vcpu-8gb-intel,c5-4vcpu-8gb-intel` (comma-separated, in order of preference; every size needs a disk of at least the snapshot's 160 GB, which rules out `c-4-intel` and the other small-disk sizes) / `nyc3` / `10` |
 
 `PLATFORM_CI_DEPLOY_ON_PUSH` stays on the box. The dispatcher does not need it.
 
