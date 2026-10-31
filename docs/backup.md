@@ -144,7 +144,10 @@ for f in "$db" "$photos"; do
     --endpoint-url "${SPACES_ENDPOINT:-https://${SPACES_REGION:-nyc3}.digitaloceanspaces.com}" \
     s3 cp "s3://$SPACES_BUCKET/${DB_BACKUP_SPACES_PREFIX:-postgres}/$f" /root/backups/
 done
-flock -w 3600 /run/lock/platform-file-backup.lock sh -euc '
+gunzip -t "/root/backups/$db" && tar -tzf "/root/backups/$photos" >/dev/null \
+  && gunzip -c "/root/backups/$db" | tail -n 5 | grep -q "PostgreSQL database dump complete" \
+  || { echo "backup files are damaged or incomplete; nothing was changed"; exit 1; }
+flock -w 3600 /run/lock/platform-file-backup.lock bash -euo pipefail -c '
   pg() { docker run --rm -i -e PGPASSWORD="$1" postgres:18-alpine psql -v ON_ERROR_STOP=1 \
     -h "${DB_BACKUP_DB_HOST:-10.108.0.5}" -U "$2" -d "$3"; }
   docker compose stop eshers-codex
@@ -154,11 +157,14 @@ flock -w 3600 /run/lock/platform-file-backup.lock sh -euc '
   gunzip -c "/root/backups/$1" \
     | pg "$ESHERS_CODEX_DB_PASSWORD" "${ESHERS_CODEX_DB_USER:-eshers_codex}" eshers_codex_db
   docker run --rm -v platform-infra_eshers_codex_photos:/data -v /root/backups:/backups:ro \
-    alpine:3 sh -c "find /data -mindepth 1 -delete && tar -xzf /backups/$2 -C /data"
+    alpine:3 sh -euc "find /data -mindepth 1 -delete && tar -xzf /backups/$2 -C /data"
   docker compose up -d eshers-codex
-' sh "$db" "$photos"
+' bash "$db" "$photos"
 ```
 
+Both files are checked before anything is stopped or dropped (gzip and tar integrity, and the
+dump's closing `PostgreSQL database dump complete` line). Inside the lock any failed step stops
+the restore with the app left stopped, so it never starts against a half-restored database.
 The dumps are taken with `--no-owner`, so the database is restored as the app user into a fresh
 database it owns. To restore photos only, run just the `alpine` step inside the same `flock`.
 
