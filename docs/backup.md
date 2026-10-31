@@ -127,24 +127,41 @@ The backup holds `/run/lock/platform-file-backup.lock` for the whole run (dumps,
 and the photo cleanup timer takes the same lock, so a database dump and the volume archive from
 one run always agree. Hold it for restores too.
 
-Restore Esher's Codex photos (nothing else needs to stop; the app answers 404 for a missing file):
+Restore Esher's Codex (database and photos together, from the same run). Hold the lock for the
+whole restore so a backup cannot dump restored rows while the photos are half extracted:
 
 ```bash
 cd /root/platform-infra
 set -a; . ./.env; set +a
-archive=platform-infra_eshers_codex_photos_<YYYY-MM-DD_HHMMSS>.tar.gz
-# Skip the download if /root/backups still has the local copy (kept 7 days).
-docker run --rm -v /root/backups:/root/backups \
-  -e AWS_ACCESS_KEY_ID="$SPACES_ACCESS_KEY" -e AWS_SECRET_ACCESS_KEY="$SPACES_SECRET_KEY" \
-  -e AWS_DEFAULT_REGION="${SPACES_REGION:-nyc3}" amazon/aws-cli \
-  --endpoint-url "${SPACES_ENDPOINT:-https://${SPACES_REGION:-nyc3}.digitaloceanspaces.com}" \
-  s3 cp "s3://$SPACES_BUCKET/${DB_BACKUP_SPACES_PREFIX:-postgres}/$archive" /root/backups/
-flock -w 3600 /run/lock/platform-file-backup.lock \
+stamp=<YYYY-MM-DD_HHMMSS>
+db=eshers_codex_db_${stamp}.sql.gz
+photos=platform-infra_eshers_codex_photos_${stamp}.tar.gz
+# Skip the download if /root/backups still has the local copies (kept 7 days).
+for f in "$db" "$photos"; do
+  docker run --rm -v /root/backups:/root/backups \
+    -e AWS_ACCESS_KEY_ID="$SPACES_ACCESS_KEY" -e AWS_SECRET_ACCESS_KEY="$SPACES_SECRET_KEY" \
+    -e AWS_DEFAULT_REGION="${SPACES_REGION:-nyc3}" amazon/aws-cli \
+    --endpoint-url "${SPACES_ENDPOINT:-https://${SPACES_REGION:-nyc3}.digitaloceanspaces.com}" \
+    s3 cp "s3://$SPACES_BUCKET/${DB_BACKUP_SPACES_PREFIX:-postgres}/$f" /root/backups/
+done
+flock -w 3600 /run/lock/platform-file-backup.lock sh -euc '
+  pg() { docker run --rm -i -e PGPASSWORD="$1" postgres:18-alpine psql -v ON_ERROR_STOP=1 \
+    -h "${DB_BACKUP_DB_HOST:-10.108.0.5}" -U "$2" -d "$3"; }
+  docker compose stop eshers-codex
+  echo "DROP DATABASE IF EXISTS eshers_codex_db WITH (FORCE);
+        CREATE DATABASE eshers_codex_db OWNER ${ESHERS_CODEX_DB_USER:-eshers_codex};" \
+    | pg "$POSTGRES_PASSWORD" "${POSTGRES_USER:-postgres}" postgres
+  gunzip -c "/root/backups/$1" \
+    | pg "$ESHERS_CODEX_DB_PASSWORD" "${ESHERS_CODEX_DB_USER:-eshers_codex}" eshers_codex_db
   docker run --rm -v platform-infra_eshers_codex_photos:/data -v /root/backups:/backups:ro \
-  alpine:3 tar -xzf "/backups/$archive" -C /data
+    alpine:3 sh -c "find /data -mindepth 1 -delete && tar -xzf /backups/$2 -C /data"
+  docker compose up -d eshers-codex
+' sh "$db" "$photos"
 ```
 
-Restore the matching `eshers_codex_db` dump first or alongside, so photo rows and files agree.
+The dumps are taken with `--no-owner`, so the database is restored as the app user into a fresh
+database it owns. To restore photos only, run just the `alpine` step inside the same `flock`.
+
 Photos are kept 90 days by `systemd/eshers-codex-photo-cleanup.timer`, which runs
 `app.chores_cli cleanup-photos` inside the container daily:
 

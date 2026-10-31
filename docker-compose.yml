@@ -304,7 +304,7 @@ services:
   eshers-codex:
     image: ghcr.io/miles-automation/eshers-codex-app:${ESHERS_CODEX_IMAGE_TAG:-latest}
     restart: unless-stopped
-    mem_limit: 192m
+    mem_limit: 256m
     environment:
       DATABASE_URL: postgresql+psycopg://${ESHERS_CODEX_DB_USER:-eshers_codex}:${ESHERS_CODEX_DB_PASSWORD:?Set ESHERS_CODEX_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${ESHERS_CODEX_DB_NAME:-eshers_codex_db}
       ENVIRONMENT: production

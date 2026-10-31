@@ -56,12 +56,9 @@ PG_CLIENT_IMAGE="${DB_BACKUP_PG_CLIENT_IMAGE:-postgres:18-alpine}"
 DEFAULT_DATABASES="ieomd_db,for_whenever_db,umami_db,synapse_db,human_index_db,human_index_v2,spark_swarm_db,eshers_codex_db,noodle_db"
 IFS=',' read -ra DATABASES <<< "${DB_BACKUP_DATABASES:-$DEFAULT_DATABASES}"
 
-# Docker volumes holding user files that live outside Postgres. Same Spaces retention as dumps.
 DEFAULT_VOLUMES="platform-infra_eshers_codex_photos"
 IFS=',' read -ra VOLUMES <<< "${DB_BACKUP_VOLUMES:-$DEFAULT_VOLUMES}"
 VOLUME_ARCHIVE_IMAGE="${DB_BACKUP_VOLUME_IMAGE:-alpine:3}"
-# Held for the whole run so file cleanup (e.g. eshers-codex-photo-cleanup) cannot delete files
-# between the DB dump and the volume archive. Cleanup and restores take the same lock.
 LOCK_FILE="${DB_BACKUP_LOCK_FILE:-/run/lock/platform-file-backup.lock}"
 
 MATRIX_HOMESERVER_URL="${MATRIX_HOMESERVER_URL:-}"
