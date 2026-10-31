@@ -1,0 +1,10 @@
+[Unit]
+Description=Esher's Codex chore photo retention (90-day completion photos, unused uploads)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/platform-infra
+ExecStart=/usr/bin/docker compose -f /root/platform-infra/docker-compose.yml exec -T eshers-codex uv run python -m app.chores_cli cleanup-photos

@@ -317,6 +317,9 @@ services:
       SPARK_SWARM_OAUTH_CLIENT_SECRET: ${ESHERS_CODEX_SPARK_SWARM_OAUTH_CLIENT_SECRET:?Set ESHERS_CODEX_SPARK_SWARM_OAUTH_CLIENT_SECRET in .env}
       SPARK_SWARM_OAUTH_REDIRECT_URI: https://esherscodex.com/auth/callback
       ADMIN_EMAILS: ${ESHERS_CODEX_ADMIN_EMAILS:-}
+      PHOTO_DIR: /app/backend/data/photos
+    volumes:
+      - eshers_codex_photos:/app/backend/data/photos
     networks:
       - internal
 
@@ -643,6 +646,7 @@ networks:
 
 volumes:
   slopticus_data:
+  eshers_codex_photos:
   postgres_data:
   caddy_data:
   caddy_config:

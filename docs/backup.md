@@ -115,3 +115,31 @@ At least once per quarter:
 3. Drop the table.
 4. Restore latest backup.
 5. Confirm pre-existing production tables/data are readable.
+
+## File volumes
+
+The same run also archives the Docker volumes listed in `DB_BACKUP_VOLUMES` (default
+`platform-infra_eshers_codex_photos`, the Esher's Codex chore photos) as
+`<volume>_YYYY-MM-DD_HHMMSS.tar.gz`, with the same Spaces prefix, verification and retention as
+the dumps. A missing volume or failed upload counts as a failed backup and alerts.
+
+Restore Esher's Codex photos (stop nothing else; the app tolerates a missing file with a 404):
+
+```bash
+cd /root/platform-infra
+docker run --rm -v /root/backups:/backups amazon/aws-cli --endpoint-url "$SPACES_ENDPOINT" \
+  s3 cp "s3://$SPACES_BUCKET/postgres/<archive>.tar.gz" /backups/   # or use the local copy
+docker run --rm -v platform-infra_eshers_codex_photos:/data -v /root/backups:/backups alpine:3 \
+  tar -xzf /backups/<archive>.tar.gz -C /data
+```
+
+Restore the matching `eshers_codex_db` dump first or alongside, so photo rows and files agree.
+Photos are kept 90 days by `systemd/eshers-codex-photo-cleanup.timer`, which runs
+`app.chores_cli cleanup-photos` inside the container daily:
+
+```bash
+install -m 644 systemd/eshers-codex-photo-cleanup.service /etc/systemd/system/
+install -m 644 systemd/eshers-codex-photo-cleanup.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now eshers-codex-photo-cleanup.timer
+```
