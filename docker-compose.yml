@@ -304,7 +304,7 @@ services:
   eshers-codex:
     image: ghcr.io/miles-automation/eshers-codex-app:${ESHERS_CODEX_IMAGE_TAG:-latest}
     restart: unless-stopped
-    mem_limit: 192m
+    mem_limit: 256m
     environment:
       DATABASE_URL: postgresql+psycopg://${ESHERS_CODEX_DB_USER:-eshers_codex}:${ESHERS_CODEX_DB_PASSWORD:?Set ESHERS_CODEX_DB_PASSWORD in .env}@${POSTGRES_HOST:-postgres}:5432/${ESHERS_CODEX_DB_NAME:-eshers_codex_db}
       ENVIRONMENT: production
@@ -317,6 +317,9 @@ services:
       SPARK_SWARM_OAUTH_CLIENT_SECRET: ${ESHERS_CODEX_SPARK_SWARM_OAUTH_CLIENT_SECRET:?Set ESHERS_CODEX_SPARK_SWARM_OAUTH_CLIENT_SECRET in .env}
       SPARK_SWARM_OAUTH_REDIRECT_URI: https://esherscodex.com/auth/callback
       ADMIN_EMAILS: ${ESHERS_CODEX_ADMIN_EMAILS:-}
+      PHOTO_DIR: /app/backend/data/photos
+    volumes:
+      - eshers_codex_photos:/app/backend/data/photos
     networks:
       - internal
 
@@ -643,6 +646,7 @@ networks:
 
 volumes:
   slopticus_data:
+  eshers_codex_photos:
   postgres_data:
   caddy_data:
   caddy_config:

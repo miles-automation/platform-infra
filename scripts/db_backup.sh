@@ -56,6 +56,11 @@ PG_CLIENT_IMAGE="${DB_BACKUP_PG_CLIENT_IMAGE:-postgres:18-alpine}"
 DEFAULT_DATABASES="ieomd_db,for_whenever_db,umami_db,synapse_db,human_index_db,human_index_v2,spark_swarm_db,eshers_codex_db,noodle_db"
 IFS=',' read -ra DATABASES <<< "${DB_BACKUP_DATABASES:-$DEFAULT_DATABASES}"
 
+DEFAULT_VOLUMES="platform-infra_eshers_codex_photos"
+IFS=',' read -ra VOLUMES <<< "${DB_BACKUP_VOLUMES:-$DEFAULT_VOLUMES}"
+VOLUME_ARCHIVE_IMAGE="${DB_BACKUP_VOLUME_IMAGE:-alpine:3}"
+LOCK_FILE="${DB_BACKUP_LOCK_FILE:-/run/lock/platform-file-backup.lock}"
+
 MATRIX_HOMESERVER_URL="${MATRIX_HOMESERVER_URL:-}"
 MATRIX_ACCESS_TOKEN="${MATRIX_ACCESS_TOKEN:-}"
 MATRIX_ROOM_ID="${MATRIX_ROOM_ID:-}"
@@ -157,11 +162,14 @@ send_matrix_alert() {
 
 cleanup_local() {
   local db_name="$1"
-  find "$BACKUP_DIR" -maxdepth 1 -type f -name "${db_name}_*.sql.gz" -mtime +7 -delete
+  local suffix="${2:-sql.gz}"
+  find "$BACKUP_DIR" -maxdepth 1 -type f -name "${db_name}_*.${suffix}" -mtime +7 -delete
 }
 
 cleanup_remote() {
   local db_name="$1"
+  local suffix="${2:-sql.gz}"
+  local suffix_re="${suffix//./\\.}"
   local now_epoch
   now_epoch="$(date -u +%s)"
   local prefix="${SPACES_PREFIX%/}/"
@@ -178,7 +186,7 @@ cleanup_remote() {
   for key in "${keys[@]}"; do
     local base
     base="$(basename "$key")"
-    if [[ ! "$base" =~ ^${db_name}_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.sql\.gz$ ]]; then
+    if [[ ! "$base" =~ ^${db_name}_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.${suffix_re}$ ]]; then
       continue
     fi
 
@@ -237,10 +245,56 @@ backup_single_db() {
     return 1
   fi
 
-  aws_cmd s3api head-object --bucket "$SPACES_BUCKET" --key "$object_key" >/dev/null
-  cleanup_local "$db_name"
-  cleanup_remote "$db_name"
+  if ! aws_cmd s3api head-object --bucket "$SPACES_BUCKET" --key "$object_key" >/dev/null; then
+    log "upload verification failed for ${db_name}"
+    send_matrix_alert "DB backup verification failed for ${filename}."
+    return 1
+  fi
+  cleanup_local "$db_name" || log "local retention cleanup failed for ${db_name}"
+  cleanup_remote "$db_name" || log "remote retention cleanup failed for ${db_name}"
   log "backup completed and verified: s3://${SPACES_BUCKET}/${object_key}"
+  return 0
+}
+
+backup_single_volume() {
+  local volume="$1"
+  local timestamp="$2"
+
+  local filename="${volume}_${timestamp}.tar.gz"
+  local tmp_path="${BACKUP_DIR}/.${filename}.tmp"
+  local local_path="${BACKUP_DIR}/${filename}"
+  local object_key="${SPACES_PREFIX%/}/${filename}"
+
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    log "volume ${volume} does not exist"
+    send_matrix_alert "File backup failed: volume ${volume} does not exist."
+    return 1
+  fi
+
+  log "starting backup for volume=${volume}"
+  if ! docker run --rm -v "${volume}:/data:ro" "$VOLUME_ARCHIVE_IMAGE" \
+      tar -czf - -C /data . >"$tmp_path"; then
+    rm -f "$tmp_path"
+    log "tar failed for volume ${volume}"
+    send_matrix_alert "File backup failed: tar failed for volume ${volume}."
+    return 1
+  fi
+
+  mv "$tmp_path" "$local_path"
+  if ! aws_cmd s3 cp "$local_path" "s3://${SPACES_BUCKET}/${object_key}" --only-show-errors; then
+    log "upload failed for volume ${volume}"
+    send_matrix_alert "File backup upload failed for ${filename}."
+    return 1
+  fi
+
+  if ! aws_cmd s3api head-object --bucket "$SPACES_BUCKET" --key "$object_key" >/dev/null; then
+    log "upload verification failed for volume ${volume}"
+    send_matrix_alert "File backup verification failed for ${filename}."
+    return 1
+  fi
+  cleanup_local "$volume" "tar.gz" || log "local retention cleanup failed for ${volume}"
+  cleanup_remote "$volume" "tar.gz" || log "remote retention cleanup failed for ${volume}"
+  log "volume backup completed and verified: s3://${SPACES_BUCKET}/${object_key}"
   return 0
 }
 
@@ -258,6 +312,16 @@ run_backup() {
   fi
 
   mkdir -p "$BACKUP_DIR"
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    if ! flock -w 3600 9; then
+      log "could not take ${LOCK_FILE} within an hour"
+      send_matrix_alert "DB backup skipped: ${LOCK_FILE} is held."
+      exit 1
+    fi
+  else
+    log "flock not available; running without the file lock"
+  fi
   local timestamp now_iso
   timestamp="$(date -u +%Y-%m-%d_%H%M%S)"
   now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -270,6 +334,15 @@ run_backup() {
       succeeded_dbs+=("$db_name")
     else
       failed_dbs+=("$db_name")
+    fi
+  done
+
+  for volume in "${VOLUMES[@]}"; do
+    [[ -z "$volume" ]] && continue
+    if backup_single_volume "$volume" "$timestamp"; then
+      succeeded_dbs+=("$volume")
+    else
+      failed_dbs+=("$volume")
     fi
   done
 
