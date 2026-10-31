@@ -123,14 +123,25 @@ The same run also archives the Docker volumes listed in `DB_BACKUP_VOLUMES` (def
 `<volume>_YYYY-MM-DD_HHMMSS.tar.gz`, with the same Spaces prefix, verification and retention as
 the dumps. A missing volume or failed upload counts as a failed backup and alerts.
 
-Restore Esher's Codex photos (stop nothing else; the app tolerates a missing file with a 404):
+The backup holds `/run/lock/platform-file-backup.lock` for the whole run (dumps, then volumes),
+and the photo cleanup timer takes the same lock, so a database dump and the volume archive from
+one run always agree. Hold it for restores too.
+
+Restore Esher's Codex photos (nothing else needs to stop; the app answers 404 for a missing file):
 
 ```bash
 cd /root/platform-infra
-docker run --rm -v /root/backups:/backups amazon/aws-cli --endpoint-url "$SPACES_ENDPOINT" \
-  s3 cp "s3://$SPACES_BUCKET/postgres/<archive>.tar.gz" /backups/   # or use the local copy
-docker run --rm -v platform-infra_eshers_codex_photos:/data -v /root/backups:/backups alpine:3 \
-  tar -xzf /backups/<archive>.tar.gz -C /data
+set -a; . ./.env; set +a
+archive=platform-infra_eshers_codex_photos_<YYYY-MM-DD_HHMMSS>.tar.gz
+# Skip the download if /root/backups still has the local copy (kept 7 days).
+docker run --rm -v /root/backups:/root/backups \
+  -e AWS_ACCESS_KEY_ID="$SPACES_ACCESS_KEY" -e AWS_SECRET_ACCESS_KEY="$SPACES_SECRET_KEY" \
+  -e AWS_DEFAULT_REGION="${SPACES_REGION:-nyc3}" amazon/aws-cli \
+  --endpoint-url "${SPACES_ENDPOINT:-https://${SPACES_REGION:-nyc3}.digitaloceanspaces.com}" \
+  s3 cp "s3://$SPACES_BUCKET/${DB_BACKUP_SPACES_PREFIX:-postgres}/$archive" /root/backups/
+flock -w 3600 /run/lock/platform-file-backup.lock \
+  docker run --rm -v platform-infra_eshers_codex_photos:/data -v /root/backups:/backups:ro \
+  alpine:3 tar -xzf "/backups/$archive" -C /data
 ```
 
 Restore the matching `eshers_codex_db` dump first or alongside, so photo rows and files agree.

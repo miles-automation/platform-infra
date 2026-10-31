@@ -7,4 +7,4 @@ Requires=docker.service
 Type=oneshot
 User=root
 WorkingDirectory=/root/platform-infra
-ExecStart=/usr/bin/docker compose -f /root/platform-infra/docker-compose.yml exec -T eshers-codex uv run python -m app.chores_cli cleanup-photos
+ExecStart=/usr/bin/flock -w 3600 /run/lock/platform-file-backup.lock /usr/bin/docker compose -f /root/platform-infra/docker-compose.yml exec -T eshers-codex uv run python -m app.chores_cli cleanup-photos
