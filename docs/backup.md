@@ -132,7 +132,20 @@ whole restore so a backup cannot dump restored rows while the photos are half ex
 
 ```bash
 cd /root/platform-infra
-set -a; . ./.env; set +a
+eval "$(python3 - ./.env <<'PY'
+import pathlib, shlex, sys
+for raw in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    key, value = key.strip(), value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    if key.isidentifier():
+        print(f"export {key}={shlex.quote(value)}")
+PY
+)"
 stamp=<YYYY-MM-DD_HHMMSS>
 db=eshers_codex_db_${stamp}.sql.gz
 photos=platform-infra_eshers_codex_photos_${stamp}.tar.gz
@@ -162,9 +175,12 @@ flock -w 3600 /run/lock/platform-file-backup.lock bash -euo pipefail -c '
 ' bash "$db" "$photos"
 ```
 
-Both files are checked before anything is stopped or dropped (gzip and tar integrity, and the
+`.env` is not valid shell, so it is loaded the same way `scripts/db_backup.sh` loads it. Both files
+are checked before anything is stopped or dropped (gzip and tar integrity, and the
 dump's closing `PostgreSQL database dump complete` line). Inside the lock any failed step stops
 the restore with the app left stopped, so it never starts against a half-restored database.
+Drill 2026-10-31: this procedure, pointed at a scratch database and volume, restored a test photo's
+row and a byte-identical file from the 22:14 UTC run downloaded from Spaces.
 The dumps are taken with `--no-owner`, so the database is restored as the app user into a fresh
 database it owns. To restore photos only, run just the `alpine` step inside the same `flock`.
 
