@@ -43,6 +43,7 @@ class FakeCloud:
     unavailable_in: set[str] = field(default_factory=set)
     list_error: str | None = None
     created: list[d.DropletSpec] = field(default_factory=list)
+    attempts: list[d.DropletSpec] = field(default_factory=list)
     deleted: list[int] = field(default_factory=list)
     next_id: int = 100
 
@@ -55,6 +56,7 @@ class FakeCloud:
         return self.snapshot if self.snapshot and self.snapshot.name.startswith(prefix) else None
 
     def create_droplet(self, spec: d.DropletSpec) -> d.Droplet:
+        self.attempts.append(spec)
         if self.create_error:
             raise d.CloudError(self.create_error)
         if spec.size in self.unavailable or spec.region in self.unavailable_in:
@@ -615,9 +617,10 @@ def test_no_available_size_counts_one_failure_naming_every_size(rig: Rig) -> Non
     status = rig.disp.status()
     assert rig.cloud.created == []
     assert status["create_failures"] == 1
-    assert "no CI box size available in any region" in status["last_create_error"]
-    assert all(size in status["last_create_error"] for size in rig.cfg.sizes)
-    assert "nyc3 (no platform-ci-snap-1)" in status["last_create_error"]
+    assert status["last_create_error"] == (
+        "no CI box size available in nyc2, tor1; platform-ci-snap-1 not in nyc3, sfo3"
+    )
+    assert {spec.size for spec in rig.cloud.attempts} == set(rig.cfg.sizes)
 
 
 def test_region_without_capacity_falls_through_to_the_next_region_with_the_snapshot(rig: Rig) -> None:
@@ -638,8 +641,10 @@ def test_regions_without_the_snapshot_are_never_tried(rig: Rig) -> None:
     status = rig.disp.status()
     assert rig.cloud.created == []
     assert status["create_failures"] == 1
-    for region in ("nyc2", "nyc3", "tor1"):
-        assert f"{region} (no platform-ci-snap-1)" in status["last_create_error"]
+    assert status["last_create_error"] == (
+        "no CI box size available in sfo3; platform-ci-snap-1 not in nyc2, nyc3, tor1"
+    )
+    assert {spec.region for spec in rig.cloud.attempts} == {"sfo3"}
 
 
 def test_other_create_errors_do_not_try_more_sizes(rig: Rig) -> None:

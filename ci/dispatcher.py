@@ -771,17 +771,21 @@ class Dispatcher:
         log(f"created CI droplet {droplet.name} ({droplet.id}) from {snap.name} region={region} size={size}")
 
     def _create_placed(self, snap: Snapshot) -> tuple[Droplet, str, str]:
-        tried: list[str] = []
+        full: list[str] = []
+        missing: list[str] = []
         for region in self.cfg.regions:
             if region not in snap.regions:
-                tried.append(f"{region} (no {snap.name})")
+                missing.append(region)
                 log(f"CI snapshot {snap.name} is not in {region}; trying the next region")
                 continue
             placed = self._create_sized(snap, region)
             if placed is not None:
                 return placed[0], region, placed[1]
-            tried.append(f"{region} ({', '.join(self.cfg.sizes)})")
-        raise CloudError(f"no CI box size available in any region: tried {'; '.join(tried)}")
+            full.append(region)
+        why = f"no CI box size available in {', '.join(full) or 'any region'}"
+        if missing:
+            why += f"; {snap.name} not in {', '.join(missing)}"
+        raise CloudError(why)
 
     def _create_sized(self, snap: Snapshot, region: str) -> tuple[Droplet, str] | None:
         for size in self.cfg.sizes:
