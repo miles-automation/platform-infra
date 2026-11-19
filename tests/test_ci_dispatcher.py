@@ -37,11 +37,13 @@ class FakeClock:
 @dataclass
 class FakeCloud:
     droplets: dict[int, d.Droplet] = field(default_factory=dict)
-    snapshot: d.Snapshot | None = field(default_factory=lambda: d.Snapshot(7, "platform-ci-snap-1", "2026-09-27"))
+    snapshot: d.Snapshot | None = field(default_factory=lambda: d.Snapshot(7, "platform-ci-snap-1", "2026-09-27", ("nyc2", "tor1")))
     create_error: str | None = None
     unavailable: set[str] = field(default_factory=set)
+    unavailable_in: set[str] = field(default_factory=set)
     list_error: str | None = None
     created: list[d.DropletSpec] = field(default_factory=list)
+    attempts: list[d.DropletSpec] = field(default_factory=list)
     deleted: list[int] = field(default_factory=list)
     next_id: int = 100
 
@@ -54,9 +56,10 @@ class FakeCloud:
         return self.snapshot if self.snapshot and self.snapshot.name.startswith(prefix) else None
 
     def create_droplet(self, spec: d.DropletSpec) -> d.Droplet:
+        self.attempts.append(spec)
         if self.create_error:
             raise d.CloudError(self.create_error)
-        if spec.size in self.unavailable:
+        if spec.size in self.unavailable or spec.region in self.unavailable_in:
             raise d.CloudError(
                 'DO POST /droplets: HTTP 422 {"id":"unprocessable_entity","message":"Size is not available in this region."}'
             )
@@ -593,7 +596,9 @@ def test_config_from_env() -> None:
         "c5-4vcpu-8gb-intel",
     )
     assert cfg.ssh_keys == ("11", "22")
-    assert cfg.region == "nyc2"
+    assert cfg.regions == ("nyc2", "nyc3", "tor1", "sfo3")
+    assert d.Config.from_env({"PLATFORM_CI_BOX_REGION": "nyc2"}).regions == ("nyc2",)
+    assert d.Config.from_env({"PLATFORM_CI_BOX_REGION": " tor1, sfo3 ,"}).regions == ("tor1", "sfo3")
 
 
 def test_unavailable_size_falls_through_to_the_next(rig: Rig) -> None:
@@ -612,8 +617,34 @@ def test_no_available_size_counts_one_failure_naming_every_size(rig: Rig) -> Non
     status = rig.disp.status()
     assert rig.cloud.created == []
     assert status["create_failures"] == 1
-    assert "no CI box size available in nyc2" in status["last_create_error"]
-    assert all(size in status["last_create_error"] for size in rig.cfg.sizes)
+    assert status["last_create_error"] == (
+        "no CI box size available in nyc2, tor1; platform-ci-snap-1 not in nyc3, sfo3"
+    )
+    assert {spec.size for spec in rig.cloud.attempts} == set(rig.cfg.sizes)
+
+
+def test_region_without_capacity_falls_through_to_the_next_region_with_the_snapshot(rig: Rig) -> None:
+    rig.cloud.unavailable_in = {"nyc2"}
+    rig.pr("a" * 40)
+    rig.tick()
+    assert [(spec.region, spec.size) for spec in rig.cloud.created] == [("tor1", "s-4vcpu-8gb")]
+    status = rig.disp.status()
+    assert status["create_failures"] == 0
+    assert status["config"]["last_region"] == "tor1"
+
+
+def test_regions_without_the_snapshot_are_never_tried(rig: Rig) -> None:
+    rig.cloud.snapshot = d.Snapshot(7, "platform-ci-snap-1", "2026-09-27", ("sfo3",))
+    rig.cloud.unavailable_in = {"sfo3"}
+    rig.pr("a" * 40)
+    rig.tick()
+    status = rig.disp.status()
+    assert rig.cloud.created == []
+    assert status["create_failures"] == 1
+    assert status["last_create_error"] == (
+        "no CI box size available in sfo3; platform-ci-snap-1 not in nyc2, nyc3, tor1"
+    )
+    assert {spec.region for spec in rig.cloud.attempts} == {"sfo3"}
 
 
 def test_other_create_errors_do_not_try_more_sizes(rig: Rig) -> None:

@@ -32,14 +32,25 @@ def platform_module() -> ModuleType:
 
 
 class FakeDo:
-    def __init__(self, tagged: list[int], snapshots: list[dict[str, Any]], final: str = "completed") -> None:
+    def __init__(
+        self, tagged: list[int], snapshots: list[dict[str, Any]], final: str = "completed", transfer: str = "completed"
+    ) -> None:
         self.tagged = tagged
         self.snapshots = snapshots
         self.final = final
+        self.transfer = transfer
+        self.transfers: dict[int, str] = {}
         self.calls: list[tuple[str, str]] = []
 
     def __call__(self, token: str, method: str, path: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         self.calls.append((method, path))
+        if path.startswith("/images/") and method == "POST":
+            assert data is not None and data["type"] == "transfer"
+            action_id = 200 + len(self.transfers)
+            self.transfers[action_id] = str(data["region"])
+            return {"action": {"id": action_id, "status": "in-progress"}}
+        if path.startswith("/images/"):
+            return {"action": {"status": self.transfer}}
         if path.startswith("/droplets?tag_name="):
             return {"droplets": [{"id": i} for i in self.tagged]}
         if method == "POST" and path.endswith("/actions"):
@@ -51,7 +62,7 @@ class FakeDo:
                 self.snapshots.append({"id": 99, "name": self.pending, "created_at": "2026-09-28T00:00:00Z"})
             return {"action": {"id": 9, "status": self.final}}
         if path.startswith("/droplets/"):
-            return {"droplet": {"name": "platform-ci-ondemand-x", "status": "active"}}
+            return {"droplet": {"name": "platform-ci-ondemand-x", "status": "active", "region": {"slug": "nyc2"}}}
         if path.startswith("/snapshots?"):
             return {"snapshots": list(self.snapshots)}
         if method == "DELETE":
@@ -84,6 +95,27 @@ def test_snapshot_prunes_only_after_success_and_keeps_newest(cli: ModuleType, mo
     deletes = [p for (m, p) in fake.calls if m == "DELETE"]
     assert deletes == ["/snapshots/2", "/snapshots/1"]
     assert ("POST", "/droplets/42/actions") in fake.calls
+
+
+def test_snapshot_is_copied_to_every_region_of_the_newest_before_pruning(
+    cli: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    newest = {**_snap(3, 3), "regions": ["nyc3", "nyc2", "tor1"]}
+    fake = FakeDo([42], [_snap(1, 1), _snap(2, 2), newest])
+    monkeypatch.setattr(cli, "_do", fake)
+    cli.cmd_ci_snapshot(_args())
+    assert sorted(fake.transfers.values()) == ["nyc3", "tor1"]
+    calls = [p for (m, p) in fake.calls]
+    assert calls.index("/images/99/actions") < calls.index("/snapshots/2")
+
+
+def test_snapshot_transfer_failure_never_prunes(cli: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    newest = {**_snap(3, 3), "regions": ["tor1"]}
+    fake = FakeDo([42], [_snap(1, 1), _snap(2, 2), newest], transfer="errored")
+    monkeypatch.setattr(cli, "_do", fake)
+    with pytest.raises(SystemExit, match="transfer to tor1 ended 'errored'"):
+        cli.cmd_ci_snapshot(_args())
+    assert not [p for (m, p) in fake.calls if m == "DELETE"]
 
 
 def test_snapshot_failure_never_prunes(cli: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:

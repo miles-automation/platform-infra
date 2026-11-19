@@ -43,7 +43,7 @@ class Config:
     tag: str = "platform-ci-ondemand"
     name_prefix: str = "platform-ci-ondemand"
     snapshot_prefix: str = "platform-ci-snap-"
-    region: str = "nyc2"
+    regions: tuple[str, ...] = ("nyc2", "nyc3", "tor1", "sfo3")
     sizes: tuple[str, ...] = ("s-4vcpu-8gb", "s-4vcpu-8gb-amd", "s-4vcpu-8gb-intel", "c5-4vcpu-8gb-intel")
     ssh_keys: tuple[str, ...] = ()
     status_context: str = "platform-ci"
@@ -66,6 +66,7 @@ class Config:
         check_only = frozenset(repo for repo, entry in raw_map.items() if entry.get("build") is False)
         keys = tuple(k.strip() for k in env.get("PLATFORM_CI_SSH_KEYS", "").split(",") if k.strip())
         sizes = tuple(s.strip() for s in env.get("PLATFORM_CI_BOX_SIZE", "").split(",") if s.strip())
+        regions = tuple(r.strip() for r in env.get("PLATFORM_CI_BOX_REGION", "").split(",") if r.strip())
 
         def num(name: str, default: float) -> float:
             value = env.get(name, "").strip()
@@ -81,7 +82,7 @@ class Config:
             tag=env.get("PLATFORM_CI_BOX_TAG", cls.tag),
             name_prefix=env.get("PLATFORM_CI_BOX_NAME_PREFIX", cls.name_prefix),
             snapshot_prefix=env.get("PLATFORM_CI_SNAPSHOT_PREFIX", cls.snapshot_prefix),
-            region=env.get("PLATFORM_CI_BOX_REGION", cls.region),
+            regions=regions or cls.regions,
             sizes=sizes or cls.sizes,
             ssh_keys=keys,
             status_context=env.get("PLATFORM_CI_STATUS_CONTEXT", cls.status_context),
@@ -110,6 +111,7 @@ class Snapshot:
     id: int
     name: str
     created_at: str
+    regions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -189,7 +191,12 @@ class DigitalOcean:
     def latest_snapshot(self, prefix: str) -> Snapshot | None:
         data = self._call("GET", "/images?private=true&per_page=200")
         found = [
-            Snapshot(id=int(i["id"]), name=str(i.get("name", "")), created_at=str(i.get("created_at", "")))
+            Snapshot(
+                id=int(i["id"]),
+                name=str(i.get("name", "")),
+                created_at=str(i.get("created_at", "")),
+                regions=tuple(str(r) for r in i.get("regions") or ()),
+            )
             for i in data.get("images") or []
             if str(i.get("name", "")).startswith(prefix) and i.get("status", "available") == "available"
         ]
@@ -748,7 +755,7 @@ class Dispatcher:
             snap = self.cloud.latest_snapshot(self.cfg.snapshot_prefix)
             if snap is None:
                 raise CloudError(f"no snapshot named {self.cfg.snapshot_prefix}*")
-            droplet, size = self._create_sized(snap)
+            droplet, region, size = self._create_placed(snap)
         except CloudError as e:
             with self._tx():
                 self._create_failed(str(e)[:200])
@@ -759,15 +766,32 @@ class Dispatcher:
                 (droplet.id, droplet.name, self.clock()),
             )
             self._set_meta("last_size", size)
+            self._set_meta("last_region", region)
             self._touch()
-        log(f"created CI droplet {droplet.name} ({droplet.id}) from {snap.name} size={size}")
+        log(f"created CI droplet {droplet.name} ({droplet.id}) from {snap.name} region={region} size={size}")
 
-    def _create_sized(self, snap: Snapshot) -> tuple[Droplet, str]:
-        unavailable: list[str] = []
+    def _create_placed(self, snap: Snapshot) -> tuple[Droplet, str, str]:
+        full: list[str] = []
+        missing: list[str] = []
+        for region in self.cfg.regions:
+            if region not in snap.regions:
+                missing.append(region)
+                log(f"CI snapshot {snap.name} is not in {region}; trying the next region")
+                continue
+            placed = self._create_sized(snap, region)
+            if placed is not None:
+                return placed[0], region, placed[1]
+            full.append(region)
+        why = f"no CI box size available in {', '.join(full) or 'any region'}"
+        if missing:
+            why += f"; {snap.name} not in {', '.join(missing)}"
+        raise CloudError(why)
+
+    def _create_sized(self, snap: Snapshot, region: str) -> tuple[Droplet, str] | None:
         for size in self.cfg.sizes:
             spec = DropletSpec(
                 name=f"{self.cfg.name_prefix}-{time.strftime('%Y%m%d-%H%M%S', time.gmtime(self.clock()))}",
-                region=self.cfg.region,
+                region=region,
                 size=size,
                 image=snap.id,
                 ssh_keys=self.cfg.ssh_keys,
@@ -778,11 +802,10 @@ class Dispatcher:
             except CloudError as e:
                 if not size_unavailable(e):
                     raise
-                unavailable.append(size)
-                log(f"CI box size {size} is not available in {self.cfg.region}; trying the next size")
+                log(f"CI box size {size} is not available in {region}; trying the next size")
                 continue
             return droplet, size
-        raise CloudError(f"no CI box size available in {self.cfg.region}: tried {', '.join(unavailable)}")
+        return None
 
     def drain_outbox(self) -> int:
         sent = 0
@@ -828,7 +851,8 @@ class Dispatcher:
                 "config": {
                     "size": ",".join(self.cfg.sizes),
                     "last_size": self._meta("last_size", ""),
-                    "region": self.cfg.region,
+                    "region": ",".join(self.cfg.regions),
+                    "last_region": self._meta("last_region", ""),
                     "idle_minutes": self.cfg.idle_seconds / 60,
                     "snapshot_prefix": self.cfg.snapshot_prefix,
                 },
@@ -988,7 +1012,7 @@ def main() -> int:
     server = ThreadingHTTPServer((cfg.listen_host, cfg.listen_port), make_handler(dispatcher))
     log(
         f"platform-ci dispatcher on {cfg.listen_host}:{cfg.listen_port}; repos={sorted(cfg.repo_map)}; "
-        f"box={','.join(cfg.sizes)}/{cfg.region} tag={cfg.tag} idle={cfg.idle_seconds / 60:g}m"
+        f"box={','.join(cfg.sizes)}/{','.join(cfg.regions)} tag={cfg.tag} idle={cfg.idle_seconds / 60:g}m"
     )
     server.serve_forever()
     return 0
