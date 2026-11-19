@@ -3585,6 +3585,8 @@ def cmd_ci_status(args: argparse.Namespace) -> None:
         print("box: none")
     cfg = data.get("config") or {}
     print(f"config: {cfg.get('size')} {cfg.get('region')} idle={cfg.get('idle_minutes')}m snapshot={cfg.get('snapshot_prefix')}*")
+    if cfg.get("last_size") or cfg.get("last_region"):
+        print(f"last box: {cfg.get('last_size') or '-'} in {cfg.get('last_region') or '-'}")
     hold = float(data.get("hold_until") or 0)
     hold_text = f"{_ci_age(hold, now)} left" if hold > now else "none"
     print(f"last activity {_ci_age(now, data.get('activity_at'))} ago; hold {hold_text}; create_failures={data.get('create_failures')} outbox={data.get('outbox')}")
@@ -3636,6 +3638,25 @@ def _ci_snapshots(token: str) -> list[dict[str, Any]]:
     return sorted(snaps, key=lambda s: str(s.get("created_at", "")), reverse=True)
 
 
+def _ci_transfer(token: str, image_id: int, regions: list[str], deadline: float) -> None:
+    pending: dict[str, int] = {}
+    for region in regions:
+        action = _do(token, "POST", f"/images/{image_id}/actions", {"type": "transfer", "region": region}).get("action") or {}
+        pending[region] = int(action["id"])
+        print(f"  transfer to {region}: action {action['id']}", file=sys.stderr)
+    while pending:
+        if time.time() > deadline:
+            raise SystemExit(f"transfer to {', '.join(pending)} still in progress; not pruning")
+        time.sleep(15)
+        for region, action_id in list(pending.items()):
+            status = str((_do(token, "GET", f"/images/{image_id}/actions/{action_id}").get("action") or {}).get("status", ""))
+            if status == "completed":
+                print(f"  transfer to {region}: completed", file=sys.stderr)
+                del pending[region]
+            elif status != "in-progress":
+                raise SystemExit(f"transfer to {region} ended {status!r}; not pruning")
+
+
 def cmd_ci_snapshot(args: argparse.Namespace) -> None:
     token = _doctl_token()
     droplet_id = args.droplet_id
@@ -3650,8 +3671,11 @@ def cmd_ci_snapshot(args: argparse.Namespace) -> None:
     droplet = _do(token, "GET", f"/droplets/{droplet_id}").get("droplet") or {}
     name = f"{CI_SNAPSHOT_PREFIX}{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     existing = _ci_snapshots(token)
-    print(f"snapshot {droplet.get('name')} ({droplet_id}, {droplet.get('status')}) -> {name}")
+    home = str((droplet.get("region") or {}).get("slug", ""))
+    regions = sorted({str(r) for s in existing[:1] for r in s.get("regions") or ()} - {home})
+    print(f"snapshot {droplet.get('name')} ({droplet_id}, {droplet.get('status')}, {home}) -> {name}")
     print(f"existing: {', '.join(str(s['name']) for s in existing) or 'none'}; keep newest {args.keep} after success")
+    print(f"copy to: {', '.join(regions) or 'none'} (every region the newest snapshot is in)")
     if args.dry_run:
         return
     require_yes(args, "snapshot the CI droplet and prune old CI snapshots")
@@ -3668,8 +3692,10 @@ def cmd_ci_snapshot(args: argparse.Namespace) -> None:
     if status != "completed":
         raise SystemExit(f"snapshot action {action_id} ended {status!r}; not pruning")
     snaps = _ci_snapshots(token)
-    if not any(s.get("name") == name for s in snaps):
+    made = next((s for s in snaps if s.get("name") == name), None)
+    if made is None:
         raise SystemExit(f"snapshot {name} not listed after completion; not pruning")
+    _ci_transfer(token, int(made["id"]), regions, deadline)
     for old in snaps[max(args.keep, 1):]:
         print(f"prune {old['name']} ({old['id']})")
         _do(token, "DELETE", f"/snapshots/{old['id']}")
