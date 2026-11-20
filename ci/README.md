@@ -140,9 +140,19 @@ The dispatcher's scoped token cannot take or delete snapshots. The command waits
 To refresh the snapshot, for example after toolchain upgrades or to warm the Docker cache:
 
 1. Run `ci hold 60` and wait for `ci status` to show the box as `ready`.
-2. SSH in. Upgrade packages, pull caches, and edit `/srv/platform-ci/workspace/platform.toml` if
-   needed. Leave `/etc/platform-ci/env` intact.
-3. Run `ci snapshot --yes`, then `ci hold 0`.
+2. SSH in. Run `PLATFORM_CI_MODE=runner bash /root/platform-infra/ci/provision.sh` after pulling
+   the checkout, then `apt-get update && apt-get -y upgrade`, pull caches, and edit
+   `/srv/platform-ci/workspace/platform.toml` if needed. Leave `/etc/platform-ci/env` intact.
+3. Run `sync` on the box and check `systemctl is-enabled platform-ci-runner` says `enabled`
+   (a live snapshot can miss writes that are not on disk yet, task 831).
+4. Run `ci snapshot --yes`, then `ci hold 0`.
+
+CI boxes never upgrade packages on their own (task 1113). A box boots from the snapshot, and with
+unattended upgrades on, a two-month-old snapshot spent its first 20 minutes installing updates
+while needrestart restarted `platform-ci-runner` after each one, killing the job it was running.
+`provision.sh` turns off the apt timers (`20auto-upgrades` set to 0, `apt-daily` and
+`apt-daily-upgrade` disabled) and tells needrestart never to restart `platform-ci*` units, so
+security updates arrive only through a snapshot refresh. Refresh it at least monthly.
 
 The snapshot carries Playwright's headless Chromium in `/root/.cache/ms-playwright` for Slopticus
 `make smoke`. The browser build is tied to the `playwright-core` version in Slopticus's

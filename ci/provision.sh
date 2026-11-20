@@ -61,6 +61,17 @@ git -C "$REPO_DIR" fetch origin -q
 git -C "$REPO_DIR" checkout -q main
 git -C "$REPO_DIR" pull -q --ff-only origin main
 
+echo "==> no unattended upgrades: they restart the runner mid-job; upgrade only when baking a snapshot"
+cat >/etc/apt/apt.conf.d/20auto-upgrades <<'APT'
+APT::Periodic::Update-Package-Lists "0";
+APT::Periodic::Unattended-Upgrade "0";
+APT
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+install -d /etc/needrestart/conf.d
+cat >/etc/needrestart/conf.d/platform-ci.conf <<'NEEDRESTART'
+$nrconf{override_rc}{qr(^platform-ci)} = 0;
+NEEDRESTART
+
 echo "==> systemd units"
 install -m 0644 "$REPO_DIR/ci/platform-ci.service" /etc/systemd/system/platform-ci.service
 install -m 0644 "$REPO_DIR/ci/platform-ci-runner.service" /etc/systemd/system/platform-ci-runner.service
