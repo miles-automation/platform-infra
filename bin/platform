@@ -3644,13 +3644,26 @@ def _ci_box_ready(droplet: dict[str, Any]) -> str | None:
     )
     try:
         proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"root@{ip}", script],
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                f"root@{ip}",
+                script,
+            ],
             capture_output=True,
             text=True,
             timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         return f"could not check the box at {ip}: {e}"
+    if proc.returncode == 255:
+        reason = (proc.stderr.strip() or "ssh failed").splitlines()[-1]
+        return f"could not reach the box at {ip} over ssh ({reason})"
     if proc.returncode != 0 or proc.stdout.strip().splitlines()[-1:] != ["enabled"]:
         detail = (proc.stdout.strip() or proc.stderr.strip() or f"exit {proc.returncode}").splitlines()[-1]
         return f"platform-ci-runner is not installed and enabled on {ip} ({detail}); run PLATFORM_CI_MODE=runner provision.sh there first"
