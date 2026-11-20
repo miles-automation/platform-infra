@@ -238,10 +238,19 @@ def test_box_check_syncs_and_needs_the_runner_enabled(monkeypatch: pytest.Monkey
     monkeypatch.setattr(module.subprocess, "run", run("enabled\n"))
     assert module._ci_box_ready(droplet) is None
     assert seen[-1][:4] == ["ssh", "-o", "BatchMode=yes", "-o"] and seen[-1][-2] == "root@203.0.113.9"
+    assert "StrictHostKeyChecking=accept-new" in seen[-1]
     assert seen[-1][-1].startswith("sync && test -f /etc/systemd/system/platform-ci-runner.service")
     monkeypatch.setattr(module.subprocess, "run", run("disabled\n", 1))
     assert "not installed and enabled on 203.0.113.9 (disabled)" in (module._ci_box_ready(droplet) or "")
     assert module._ci_box_ready({"networks": {"v4": []}}) == "the droplet has no public IPv4 to check it over ssh"
+
+    def unreachable(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 255, stdout="", stderr="Host key verification failed.\n")
+
+    monkeypatch.setattr(module.subprocess, "run", unreachable)
+    assert module._ci_box_ready(droplet) == (
+        "could not reach the box at 203.0.113.9 over ssh (Host key verification failed.)"
+    )
 
 
 def test_retry_queues_a_finished_job_again(
