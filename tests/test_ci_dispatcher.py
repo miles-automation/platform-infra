@@ -653,3 +653,40 @@ def test_other_create_errors_do_not_try_more_sizes(rig: Rig) -> None:
     rig.tick()
     assert rig.disp.status()["create_failures"] == 1
     assert "droplet limit" in rig.disp.status()["last_create_error"]
+
+
+def test_retry_requeues_a_finished_job_but_not_an_active_or_outdated_one(rig: Rig) -> None:
+    rig.pr("a" * 40, number=7)
+    first = rig.disp.status()["queued"][0]["id"]
+    assert rig.disp.retry(first) == (409, f"job #{first} is still queued")
+    assert rig.disp.retry(12345) == (404, "no job #12345")
+    with rig.disp._tx():
+        rig.disp._fail(rig.disp._jobs("id = ?", (first,))[0], "CI box lost mid-job 2x")
+    assert rig.disp.status()["queued"] == []
+    assert rig.disp.retry(first) == (202, "queued check")
+    queued = rig.disp.status()["queued"]
+    assert [(j["sha"], j["action"]) for j in queued] == [("a" * 40, "check")]
+    again = queued[0]["id"]
+    assert again != first
+    assert rig.disp.retry(first) == (202, "already queued check")
+    rig.pr("b" * 40, number=7)
+    with rig.disp._tx():
+        for job in rig.disp._jobs("state = 'queued'"):
+            rig.disp._fail(job, "lost")
+    code, message = rig.disp.retry(again)
+    assert code == 409 and "is outdated" in message and "(bbbbbbb)" in message
+
+
+def test_retry_needs_the_admin_token_over_http(rig: Rig) -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), d.make_handler(rig.disp))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        body = json.dumps({"job_id": 1}).encode()
+        assert _post(f"{base}/admin/retry", body, {"Authorization": "Bearer runner-token"})[0] == 401
+        assert _post(f"{base}/admin/retry", body, {"Authorization": "Bearer admin-token"}) == (404, '{"message": "no job #1"}')
+        bad = json.dumps({"job_id": "x"}).encode()
+        assert _post(f"{base}/admin/retry", bad, {"Authorization": "Bearer admin-token"})[0] == 400
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -71,7 +71,8 @@ class FakeDo:
 
 
 def _args(**kw: Any) -> argparse.Namespace:
-    base: dict[str, Any] = {"cfg": {}, "droplet_id": None, "keep": 2, "timeout_minutes": 1.0, "yes": True, "dry_run": False}
+    base: dict[str, Any] = {"cfg": {}, "droplet_id": None, "keep": 2, "timeout_minutes": 1.0, "yes": True, "dry_run": False,
+                            "no_verify": False}
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -85,6 +86,7 @@ def cli(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     module = platform_module()
     monkeypatch.setenv("DIGITALOCEAN_ACCESS_TOKEN", "t")
     monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    monkeypatch.setattr(module, "_ci_box_ready", lambda droplet: None)
     return module
 
 
@@ -206,3 +208,57 @@ def test_status_and_hold_talk_to_the_dispatcher(
     monkeypatch.setenv("PLATFORM_CI_ADMIN_TOKEN", "wrong")
     with pytest.raises(SystemExit, match="HTTP 401"):
         cli.cmd_ci_status(args)
+
+
+def test_snapshot_refuses_when_the_box_is_not_ready_and_no_verify_skips_the_check(
+    cli: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeDo([42], [_snap(1, 1)])
+    monkeypatch.setattr(cli, "_do", fake)
+    monkeypatch.setattr(cli, "_ci_box_ready", lambda droplet: "platform-ci-runner is not installed and enabled")
+    with pytest.raises(SystemExit, match="not snapshotting: platform-ci-runner is not installed and enabled"):
+        cli.cmd_ci_snapshot(_args())
+    assert not [c for c in fake.calls if c[0] == "POST"]
+    cli.cmd_ci_snapshot(_args(no_verify=True))
+    assert ("POST", "/droplets/42/actions") in fake.calls
+
+
+def test_box_check_syncs_and_needs_the_runner_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = platform_module()
+    droplet = {"networks": {"v4": [{"type": "private", "ip_address": "10.0.0.2"},
+                                   {"type": "public", "ip_address": "203.0.113.9"}]}}
+    seen: list[list[str]] = []
+
+    def run(answer: str, code: int = 0) -> Any:
+        def fake(cmd: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+            seen.append(cmd)
+            return subprocess.CompletedProcess(cmd, code, stdout=answer, stderr="")
+        return fake
+
+    monkeypatch.setattr(module.subprocess, "run", run("enabled\n"))
+    assert module._ci_box_ready(droplet) is None
+    assert seen[-1][:4] == ["ssh", "-o", "BatchMode=yes", "-o"] and seen[-1][-2] == "root@203.0.113.9"
+    assert seen[-1][-1].startswith("sync && test -f /etc/systemd/system/platform-ci-runner.service")
+    monkeypatch.setattr(module.subprocess, "run", run("disabled\n", 1))
+    assert "not installed and enabled on 203.0.113.9 (disabled)" in (module._ci_box_ready(droplet) or "")
+    assert module._ci_box_ready({"networks": {"v4": []}}) == "the droplet has no public IPv4 to check it over ssh"
+
+
+def test_retry_queues_a_finished_job_again(
+    cli: ModuleType, served: tuple[d.Dispatcher, str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    disp, url = served
+    monkeypatch.setenv("PLATFORM_CI_ADMIN_TOKEN", "admin")
+    disp.handle_webhook("push", "x", {"ref": "refs/heads/main", "after": "c" * 40,
+                                      "repository": {"full_name": "o/r", "default_branch": "main"}})
+    job = disp.status()["queued"][0]["id"]
+    args = argparse.Namespace(cfg={"ci": {"dispatcher_url": url}}, job_id=job)
+    with pytest.raises(SystemExit, match=f"not retried: job #{job} is still queued"):
+        cli.cmd_ci_retry(args)
+    with disp._tx():
+        disp._fail(disp._jobs("id = ?", (job,))[0], "CI box lost mid-job 2x")
+    cli.cmd_ci_retry(args)
+    assert capsys.readouterr().out.strip().splitlines()[-1] == f"#{job}: queued build_deploy"
+    assert [j["sha"] for j in disp.status()["queued"]] == ["c" * 40]
+    with pytest.raises(SystemExit, match="not retried: no job #999"):
+        cli.cmd_ci_retry(argparse.Namespace(cfg={"ci": {"dispatcher_url": url}}, job_id=999))

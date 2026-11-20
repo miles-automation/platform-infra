@@ -594,6 +594,28 @@ class Dispatcher:
             log(f"done {found[0].action} {found[0].repo}@{short(found[0].sha)}: {outcome}")
             return True
 
+    def retry(self, job_id: int) -> tuple[int, str]:
+        with self._tx():
+            found = self._jobs("id = ?", (job_id,))
+            if not found:
+                return 404, f"no job #{job_id}"
+            job = found[0]
+            if job.state in ("queued", "leased"):
+                return 409, f"job #{job_id} is still {job.state}"
+            newer = (
+                self._jobs("id > ? AND action = 'check' AND repo = ? AND pr = ? AND sha != ?",
+                           (job.id, job.repo, job.pr, job.sha))
+                if job.action == "check" and job.pr is not None
+                else self._jobs("id > ? AND action = 'build_deploy' AND project = ? AND sha != ?",
+                                (job.id, job.project, job.sha))
+                if job.action == "build_deploy"
+                else []
+            )
+            if newer:
+                return 409, f"job #{job_id} is outdated: #{newer[-1].id} is newer ({short(newer[-1].sha)})"
+            log(f"retry of #{job_id} requested ({job.state}: {job.detail})")
+            return self._enqueue(job.action, job.repo, job.project, job.sha, job.pr)
+
     def hold(self, seconds: float) -> float:
         with self._tx():
             until = self.clock() + max(0.0, seconds)
@@ -923,6 +945,18 @@ def make_handler(dispatcher: Dispatcher) -> type[BaseHTTPRequestHandler]:
                 self._webhook(body)
             elif self.path.startswith("/runner/"):
                 self._runner(body)
+            elif self.path == "/admin/retry":
+                if not bearer_ok(cfg.admin_token, self.headers.get("Authorization", "")):
+                    self._reply(401, "unauthorized")
+                    return
+                data = self._json(body) or {}
+                try:
+                    job_id = int(data.get("job_id", 0))
+                except (TypeError, ValueError):
+                    self._reply(400, "job_id must be a number")
+                    return
+                code, message = dispatcher.retry(job_id)
+                self._reply(code, {"message": message})
             elif self.path == "/admin/hold":
                 if not bearer_ok(cfg.admin_token, self.headers.get("Authorization", "")):
                     self._reply(401, "unauthorized")
