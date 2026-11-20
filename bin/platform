@@ -3607,6 +3607,56 @@ def cmd_ci_hold(args: argparse.Namespace) -> None:
     print(f"hold until {datetime.fromtimestamp(float(data['hold_until']), timezone.utc).isoformat()}")
 
 
+def cmd_ci_retry(args: argparse.Namespace) -> None:
+    token = _ci_secret(args, "PLATFORM_CI_ADMIN_TOKEN")
+    try:
+        data = _http_json(
+            method="POST",
+            url=f"{_ci_url(args)}/admin/retry",
+            headers={"Authorization": f"Bearer {token}"},
+            data={"job_id": args.job_id},
+        )
+    except urllib.error.HTTPError as e:
+        try:
+            message = json.loads(e.read() or b"{}").get("message", "")
+        except (ValueError, AttributeError):
+            message = ""
+        raise SystemExit(f"not retried: {message or f'HTTP {e.code}'}") from e
+    except urllib.error.URLError as e:
+        raise SystemExit(f"dispatcher unreachable at {_ci_url(args)}: {e.reason}") from e
+    print(f"#{args.job_id}: {data.get('message', 'queued')}")
+
+
+def _ci_box_ready(droplet: dict[str, Any]) -> str | None:
+    ip = next(
+        (
+            str(net.get("ip_address"))
+            for net in ((droplet.get("networks") or {}).get("v4") or [])
+            if net.get("type") == "public" and net.get("ip_address")
+        ),
+        "",
+    )
+    if not ip:
+        return "the droplet has no public IPv4 to check it over ssh"
+    script = (
+        "sync && test -f /etc/systemd/system/platform-ci-runner.service "
+        "&& systemctl is-enabled platform-ci-runner && sync"
+    )
+    try:
+        proc = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"root@{ip}", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"could not check the box at {ip}: {e}"
+    if proc.returncode != 0 or proc.stdout.strip().splitlines()[-1:] != ["enabled"]:
+        detail = (proc.stdout.strip() or proc.stderr.strip() or f"exit {proc.returncode}").splitlines()[-1]
+        return f"platform-ci-runner is not installed and enabled on {ip} ({detail}); run PLATFORM_CI_MODE=runner provision.sh there first"
+    return None
+
+
 def _doctl_token() -> str:
     override = os.getenv("DIGITALOCEAN_ACCESS_TOKEN", "").strip()
     if override:
@@ -3679,6 +3729,11 @@ def cmd_ci_snapshot(args: argparse.Namespace) -> None:
     if args.dry_run:
         return
     require_yes(args, "snapshot the CI droplet and prune old CI snapshots")
+    if not args.no_verify:
+        refused = _ci_box_ready(droplet)
+        if refused:
+            raise SystemExit(f"not snapshotting: {refused}")
+        print("box checked: disk synced, platform-ci-runner installed and enabled")
     action = _do(token, "POST", f"/droplets/{droplet_id}/actions", {"type": "snapshot", "name": name}).get("action") or {}
     action_id = action.get("id")
     deadline = time.time() + args.timeout_minutes * 60
@@ -4131,7 +4186,17 @@ def build_parser() -> argparse.ArgumentParser:
     ci_snapshot.add_argument("--keep", type=int, default=2, help="CI snapshots to keep, newest first (min 1)")
     ci_snapshot.add_argument("--timeout-minutes", type=float, default=45)
     ci_snapshot.add_argument("--yes", action="store_true", help="Confirm")
+    ci_snapshot.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Skip the ssh check that syncs the disk and confirms the runner unit is enabled",
+    )
     ci_snapshot.set_defaults(func=cmd_ci_snapshot)
+    ci_retry = ci_sub.add_parser(
+        "retry", help="Queue a finished CI job again (same action, repo and commit)", parents=[common]
+    )
+    ci_retry.add_argument("job_id", type=int, help="Job number from `platform ci status`")
+    ci_retry.set_defaults(func=cmd_ci_retry)
 
     canvas = sub.add_parser("canvas", help="UI Canvas: capture & compare screens across all sparks", parents=[common])
     canvas_sub = canvas.add_subparsers(dest="canvas_cmd", required=True)

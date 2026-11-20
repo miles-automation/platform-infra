@@ -127,10 +127,22 @@ and `caddy`, effective from the next boot. This is what the snapshot should cont
 ```sh
 python3.13 ./bin/platform ci status            # box + queue + recent jobs (PLATFORM_CI_ADMIN_TOKEN, else Spark Swarm)
 python3.13 ./bin/platform ci hold 60           # keep a box up for 60 min (creates one if needed); `hold 0` releases
+python3.13 ./bin/platform ci retry 765           # queue a finished job again (same action, repo, commit)
 python3.13 ./bin/platform ci snapshot --dry-run
 python3.13 ./bin/platform ci snapshot --yes    # live snapshot of the one tagged box, keep newest 2
 python3.13 ./bin/platform ci snapshot --droplet-id 551995541 --yes   # first snapshot, from the old always-on box
 ```
+
+`ci retry <job>` (`POST /admin/retry`, admin token) queues a job that already finished, for example
+one that ended `error: CI box lost mid-job`, with the same action, repo, commit and PR. It refuses a
+job that is still queued or leased, and an outdated one: a check whose PR has a newer head, or a
+deploy whose project has a newer deploy, so a retry never supersedes newer work. Before it existed,
+the only way to rerun a check was to push a new commit.
+
+Before snapshotting, `ci snapshot` connects to the box over ssh (`root@` its public IPv4), runs `sync`,
+and requires `/etc/systemd/system/platform-ci-runner.service` to exist and `systemctl is-enabled
+platform-ci-runner` to say `enabled`; otherwise it refuses and takes nothing (task 831: a live
+snapshot once missed the runner unit written seconds before). `--no-verify` skips the check.
 
 `ci snapshot` runs only from the owner's Mac. It authenticates with the local doctl login
 (`doctl auth token`), or `DIGITALOCEAN_ACCESS_TOKEN` if that is set, and never prints the token.
@@ -143,9 +155,7 @@ To refresh the snapshot, for example after toolchain upgrades or to warm the Doc
 2. SSH in. Run `PLATFORM_CI_MODE=runner bash /root/platform-infra/ci/provision.sh` after pulling
    the checkout, then `apt-get update && apt-get -y upgrade`, pull caches, and edit
    `/srv/platform-ci/workspace/platform.toml` if needed. Leave `/etc/platform-ci/env` intact.
-3. Run `sync` on the box and check `systemctl is-enabled platform-ci-runner` says `enabled`
-   (a live snapshot can miss writes that are not on disk yet, task 831).
-4. Run `ci snapshot --yes`, then `ci hold 0`.
+3. Run `ci snapshot --yes` (it syncs the disk and checks the runner unit first), then `ci hold 0`.
 
 CI boxes never upgrade packages on their own (task 1113). A box boots from the snapshot, and with
 unattended upgrades on, a two-month-old snapshot spent its first 20 minutes installing updates
