@@ -4196,7 +4196,7 @@ def build_parser() -> argparse.ArgumentParser:
         "snapshot", help="Snapshot a running CI box (no power-off) and prune old CI snapshots", parents=[common]
     )
     ci_snapshot.add_argument("--droplet-id", type=int, help="Droplet to snapshot (default: the one platform-ci-ondemand box)")
-    ci_snapshot.add_argument("--keep", type=int, default=2, help="CI snapshots to keep, newest first (min 1)")
+    ci_snapshot.add_argument("--keep", type=int, default=1, help="CI snapshots to keep, newest first (min 1)")
     ci_snapshot.add_argument("--timeout-minutes", type=float, default=45)
     ci_snapshot.add_argument("--yes", action="store_true", help="Confirm")
     ci_snapshot.add_argument(

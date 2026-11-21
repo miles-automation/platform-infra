@@ -129,7 +129,7 @@ python3.13 ./bin/platform ci status            # box + queue + recent jobs (PLAT
 python3.13 ./bin/platform ci hold 60           # keep a box up for 60 min (creates one if needed); `hold 0` releases
 python3.13 ./bin/platform ci retry 765           # queue a finished job again (same action, repo, commit)
 python3.13 ./bin/platform ci snapshot --dry-run
-python3.13 ./bin/platform ci snapshot --yes    # live snapshot of the one tagged box, keep newest 2
+python3.13 ./bin/platform ci snapshot --yes    # live snapshot of the one tagged box, keep only the new one
 python3.13 ./bin/platform ci snapshot --droplet-id 551995541 --yes   # first snapshot, from the old always-on box
 ```
 
@@ -182,7 +182,9 @@ The next box boots from the new image.
   An on-demand box is billed for its lifetime, including the 10-minute idle tail. DO bills
   Droplets per second; confirm this on the first invoice. For
   example, 2 h/day of box life comes to about $4.30/mo. Each snapshot costs $0.06/GB-month;
-  about 19 GB used today gives about $1.15/mo per kept snapshot.
+  about 22 GB used today gives about $1.35/mo per region copy (two copies, nyc2 and nyc3).
+  `ci snapshot` keeps only the newest snapshot by default (owner decision 2026-11-21);
+  `--keep N` keeps more.
 
 ## Push mode (legacy always-on box, until cutover)
 
